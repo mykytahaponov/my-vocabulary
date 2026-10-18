@@ -1,10 +1,23 @@
 // Bump this version for every release that changes any cached file.
-const VERSION = 'v2.0.1';
+const VERSION = 'v2.0.2';
 const PREFIX = `my-vocabulary:${self.registration.scope}:`;
 const CACHE = PREFIX + VERSION;
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './core.mjs', './config.js', './sync.mjs', './cloud.mjs', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)));
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    // A fresh service-worker script must not fill its new cache with an old
+    // HTTP-cached cloud.mjs. Store fresh release requests under canonical URLs.
+    const fresh = await Promise.all(ASSETS.map(async path => {
+      const canonical = new URL(path, self.registration.scope).href;
+      const releaseURL = new URL(canonical);
+      releaseURL.searchParams.set('__release', VERSION);
+      const response = await fetch(new Request(releaseURL.href, {cache:'reload'}));
+      if (!response.ok) throw new Error(`Cannot cache ${path}: ${response.status}`);
+      return [canonical, response];
+    }));
+    await Promise.all(fresh.map(([url, response]) => cache.put(url, response)));
+  })());
 });
 self.addEventListener('message', event => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
