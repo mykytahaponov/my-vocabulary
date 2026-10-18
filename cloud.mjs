@@ -1,5 +1,6 @@
 // Small REST client; no CDN, build tools, or third-party runtime packages.
 import {checkedRow} from './sync.mjs';
+import {wordExtras} from './core.mjs';
 export class CloudError extends Error {
   constructor(message, status=0, code='') {super(message);this.status=status;this.code=code;}
 }
@@ -32,6 +33,7 @@ export class SupabaseConnection {
         else if(response.status===403) message='Немає доступу до хмарного словника. Перевір налаштування Supabase.';
         else if(response.status===429) message='Забагато спроб. Зачекай трохи й повтори.';
         else if(response.status===404 || value?.code==='42P01') message='Хмарну таблицю не знайдено. Перевір, чи створена vocabulary_words.';
+        else if(['42703','PGRST204'].includes(value?.code)) message='Потрібно виконати оновлення Supabase для прикладів речень (файл 01-add-examples.sql). Слова збережені локально.';
         throw new CloudError(message,response.status,value?.code || value?.error_code || '');
       }
       return value;
@@ -63,7 +65,7 @@ export class SupabaseConnection {
   async list(owner) {
     const rows=[];
     for(let offset=0;offset<100000;offset+=500){
-      const q=new URLSearchParams({select:'id,en,uk,deleted,revision',user_id:`eq.${owner}`,order:'id.asc',limit:'500',offset:String(offset)});
+      const q=new URLSearchParams({select:'id,en,uk,example_en,example_uk,note,deleted,revision',user_id:`eq.${owner}`,order:'id.asc',limit:'500',offset:String(offset)});
       const page=await this.request(`/rest/v1/vocabulary_words?${q}`);
       if(!Array.isArray(page))throw new CloudError('Неочікувана відповідь таблиці слів.');
       rows.push(...page.map(row=>checkedRow(row)));
@@ -72,7 +74,7 @@ export class SupabaseConnection {
     throw new CloudError('Забагато записів для цієї версії. Локальний словник не змінено.');
   }
   async write(owner, operation) {
-    const body={en:operation.desired.en,uk:operation.desired.uk,deleted:operation.desired.deleted};
+    const body={en:operation.desired.en,uk:operation.desired.uk,...wordExtras(operation.desired),deleted:operation.desired.deleted};
     let rows;
     if(operation.revision === null){
       rows=await this.request('/rest/v1/vocabulary_words',{method:'POST',body:{...body,user_id:owner,id:operation.id},prefer:'return=representation'});

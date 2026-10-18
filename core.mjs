@@ -1,6 +1,16 @@
 // Pure data and answer logic shared by the app and its dependency-free tests.
 export const MAX_WORDS = 5000;
 export const MAX_TEXT = 500;
+export const EXTRA_LIMITS = {example_en:2000, example_uk:2000, note:500};
+export function wordExtras(word) {
+  const extras = {};
+  for (const [key, limit] of Object.entries(EXTRA_LIMITS)) {
+    const value = word[key] ?? '';
+    if (typeof value !== 'string' || value.length > limit) throw new Error('Некоректний приклад або примітка в картці.');
+    extras[key] = value.trim();
+  }
+  return extras;
+}
 export function normalize(text, language) {
   let result = String(text).normalize('NFKC').toLocaleLowerCase(language === 'en' ? 'en' : 'uk')
     .replace(/[’‘ʼ`´]/g, "'").replace(/[‐‑‒–—]/g, '-').trim()
@@ -30,7 +40,7 @@ export function validateBackup(data) {
     if (!word || typeof word.id !== 'string' || !word.id || word.id.length > 100 || ids.has(word.id) || !validateText(word.en) || !validateText(word.uk))
       throw new Error('Копія містить некоректні слова або повторні ID. Імпорт скасовано.');
     ids.add(word.id);
-    return {id: word.id, en: word.en.trim(), uk: word.uk.trim()};
+    return {id: word.id, en: word.en.trim(), uk: word.uk.trim(), ...wordExtras(word)};
   });
   let lastQuiz = null;
   if (data.lastQuiz != null) {
@@ -46,7 +56,12 @@ export function mergeWords(existing, incoming, makeId) {
   const ids = new Set(existing.map(w => w.id));
   for (const word of incoming) {
     const key = wordKey(word);
-    if (keys.has(key)) continue;
+    if (keys.has(key)) {
+      const index = words.findIndex(w => wordKey(w) === key);
+      const prior = wordExtras(words[index]), extra = wordExtras(word);
+      words[index] = {...words[index], ...Object.fromEntries(Object.keys(EXTRA_LIMITS).map(k => [k, prior[k] || extra[k]]))};
+      continue;
+    }
     let id = word.id;
     while (ids.has(id)) id = makeId();
     words.push({...word, id}); keys.add(key); ids.add(id);

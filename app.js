@@ -1,4 +1,4 @@
-import {MAX_WORDS, emptyData, validateText, validateBackup, wordKey, mergeWords, isCorrect, variants, shuffled} from './core.mjs';
+import {MAX_WORDS, emptyData, validateText, validateBackup, wordKey, mergeWords, isCorrect, variants, shuffled, wordExtras} from './core.mjs';
 import {SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY} from './config.js';
 import {plainWord, sameContent, checkedCloud, desiredRow, pendingCount, reconcile} from './sync.mjs';
 import {SupabaseConnection} from './cloud.mjs';
@@ -67,6 +67,13 @@ function renderWords() {
   for (const word of [...words].reverse()) {
     const li = document.createElement('li'); const content = element('div', '', 'word-content');
     content.append(element('strong', word.en), element('p', word.uk));
+    if(word.example_en || word.example_uk || word.note){
+      const details=element('details','','word-examples');details.append(element('summary','Приклад і примітка'));
+      if(word.example_en)details.append(element('p',word.example_en));
+      if(word.example_uk)details.append(element('p',word.example_uk,'muted'));
+      if(word.note)details.append(element('p',word.note,'hint'));
+      content.append(details);
+    }
     const menu=document.createElement('details'); menu.className='word-menu';
     const summary=element('summary','⋯'); summary.setAttribute('aria-label',`Дії для ${word.en}`);
     menu.addEventListener('toggle',()=>{
@@ -93,7 +100,7 @@ function resetForm() {
   $('add-another-row').hidden=false;$('editor-message').textContent='';
 }
 function closeEditor(force=false) {
-  if(!force && ($('english').value.trim() || $('ukrainian').value.trim()) && !confirm('Закрити форму без збереження?'))return;
+  if(!force && ['english','ukrainian','example-en','example-uk','word-note'].some(id=>$(id).value.trim()) && !confirm('Закрити форму без збереження?'))return;
   $('word-editor').close();resetForm();
 }
 function openEditor() {
@@ -101,9 +108,10 @@ function openEditor() {
   $('english').focus();
 }
 function editWord(word) {
-  if(($('english').value || $('ukrainian').value) && !confirm('Замінити незбережені поля вибраним словом?'))return;
+  if(['english','ukrainian','example-en','example-uk','word-note'].some(id=>$(id).value.trim()) && !confirm('Замінити незбережені поля вибраним словом?'))return;
   resetForm();editing=word.id;editingOriginal={...word};
   $('english').value=word.en;$('ukrainian').value=word.uk;
+  $('example-en').value=word.example_en || '';$('example-uk').value=word.example_uk || '';$('word-note').value=word.note || '';
   $('form-title').textContent='Редагувати слово';$('save-word').textContent='Зберегти';
   $('add-another-row').hidden=true;
   if(!$('word-editor').open)$('word-editor').showModal();
@@ -118,7 +126,8 @@ document.addEventListener('keydown',event=>{if(event.key==='Escape')document.que
 $('word-form').onsubmit = event => {
   event.preventDefault();
   if(editing && !sameContent({...editingOriginal,deleted:false}, {...data.words.find(w=>w.id===editing),deleted:false})) { notify('Слово змінилося під час редагування. Скопіюй свої поля за потреби, скасуй редагування та відкрий слово знову.',true); return; }
-  const word = {id: editing || makeId(), en:$('english').value.trim(), uk:$('ukrainian').value.trim()};
+  const word = {id: editing || makeId(), en:$('english').value.trim(), uk:$('ukrainian').value.trim(),
+    ...wordExtras({example_en:$('example-en').value,example_uk:$('example-uk').value,note:$('word-note').value})};
   if (!validateText(word.en) || !validateText(word.uk)) { notify('Введи слово та переклад: до 500 символів у кожному полі.', true); return; }
   if (!editing && data.words.length >= MAX_WORDS) { notify('Ліміт першої версії — 5000 слів.', true); return; }
   if (data.words.some(w => w.id !== word.id && wordKey(w) === wordKey(word))) { notify('Така картка вже є у словнику.', true); return; }
@@ -172,6 +181,11 @@ function checkAnswer(skipped = false) {
   $('feedback').hidden = false; $('feedback').classList.toggle('wrong', !correct);
   $('feedback-title').textContent = correct ? 'Правильно ✓' : skipped ? 'Наступного разу згадаєш.' : 'Поки що не збігається.';
   $('expected').textContent = `Правильна відповідь: ${expected}`;
+  $('quiz-example').replaceChildren();
+  if(word.example_en)$('quiz-example').append(element('p',word.example_en));
+  if(word.example_uk)$('quiz-example').append(element('p',word.example_uk,'muted'));
+  if(word.note)$('quiz-example').append(element('p',word.note,'hint'));
+  $('quiz-example').hidden=!$('quiz-example').childElementCount;
   $('accept').hidden = correct || skipped; $('next').focus();
 }
 $('answer-form').onsubmit = event => { event.preventDefault(); checkAnswer(); }; $('skip').onclick = () => checkAnswer(true);
@@ -287,7 +301,7 @@ function scheduleSync(delay=700) {
 }
 function persistCloud(next) {
   // Metadata acknowledgements must not rebuild a long word list or move focus.
-  if(next.words.length===data.words.length && next.words.every((w,i)=>w.id===data.words[i].id && w.en===data.words[i].en && w.uk===data.words[i].uk)) next={...next,words:data.words};
+  if(next.words.length===data.words.length && next.words.every((w,i)=>w.id===data.words[i].id && sameContent(w,data.words[i]))) next={...next,words:data.words};
   return commit(next,false,true);
 }
 async function runSync() {
@@ -329,7 +343,7 @@ function renderConflicts() {
   $('sync-conflicts').hidden=!syncConflicts.length;$('conflict-list').replaceChildren();
   for(const item of syncConflicts){
     const div=element('div','','conflict-card');
-    const describe=row=>!row||row.deleted ? 'Видалено' : `${row.en} → ${row.uk}`;
+    const describe=row=>!row||row.deleted ? 'Видалено' : [ `${row.en} → ${row.uk}`,row.example_en,row.example_uk,row.note ].filter(Boolean).join(' · ');
     const local=desiredRow(data.words,data.cloud.base,item.id) || item.local;
     div.append(element('p',`На цьому пристрої: ${describe(local)}`),element('p',`У хмарі: ${describe(item.remote)}`));
     const buttons=element('div','','button-row');

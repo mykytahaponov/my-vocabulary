@@ -1,12 +1,13 @@
-import {MAX_WORDS, validateText, wordKey} from './core.mjs';
-export const plainWord = row => ({id:row.id, en:row.en, uk:row.uk});
+import {MAX_WORDS, validateText, wordKey, wordExtras} from './core.mjs';
+export const plainWord = row => ({id:row.id, en:row.en, uk:row.uk, ...wordExtras(row)});
 export function sameContent(a, b) {
-  return Boolean(a && b && a.en === b.en && a.uk === b.uk && Boolean(a.deleted) === Boolean(b.deleted));
+  return Boolean(a && b && a.en === b.en && a.uk === b.uk && Boolean(a.deleted) === Boolean(b.deleted) &&
+    ['example_en','example_uk','note'].every(key => (a[key] || '') === (b[key] || '')));
 }
 export function checkedRow(row, allowStaged=false) {
   if (!row || typeof row.id !== 'string' || !row.id || row.id.length > 100 || !validateText(row.en) || !validateText(row.uk) || typeof row.deleted !== 'boolean' || !Number.isSafeInteger(row.revision) || row.revision < (allowStaged ? 0 : 1))
     throw new Error('Хмара повернула некоректну картку. Локальний словник не замінено.');
-  return {id:row.id, en:row.en, uk:row.uk, deleted:row.deleted, revision:row.revision};
+  return {...plainWord(row), deleted:row.deleted, revision:row.revision};
 }
 export function checkedCloud(value) {
   if (!value || typeof value.owner !== 'string' || !/^[a-f0-9-]{36}$/i.test(value.owner) || typeof value.email !== 'string' || !Array.isArray(value.base) || value.base.length > 100000)
