@@ -172,7 +172,6 @@ function checkAnswer(skipped = false) {
   $('feedback').hidden = false; $('feedback').classList.toggle('wrong', !correct);
   $('feedback-title').textContent = correct ? 'Правильно ✓' : skipped ? 'Наступного разу згадаєш.' : 'Поки що не збігається.';
   $('expected').textContent = `Правильна відповідь: ${expected}`;
-  $('given').textContent = skipped ? 'Ти пропустив це слово.' : `Твоя відповідь: ${answer}`;
   $('accept').hidden = correct || skipped; $('next').focus();
 }
 $('answer-form').onsubmit = event => { event.preventDefault(); checkAnswer(); }; $('skip').onclick = () => checkAnswer(true);
