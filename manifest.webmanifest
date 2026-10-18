@@ -1,0 +1,16 @@
+{
+  "id": "./",
+  "name": "Мої слова · English Vocabulary",
+  "short_name": "Мої слова",
+  "description": "Особистий словник та квіз із ручним введенням відповіді",
+  "lang": "uk",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7f3",
+  "theme_color": "#176655",
+  "icons": [
+    {"src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}
