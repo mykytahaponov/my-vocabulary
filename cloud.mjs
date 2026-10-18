@@ -5,7 +5,7 @@ export class CloudError extends Error {
 }
 export class SupabaseConnection {
   constructor({url,key,storage,sessionKey,fetcher=globalThis.fetch,locks=globalThis.navigator?.locks}) {
-    this.url=url; this.key=key; this.storage=storage; this.sessionKey=sessionKey; this.fetcher=fetcher; this.locks=locks; this.refreshing=null;
+    this.url=url; this.key=key; this.storage=storage; this.sessionKey=sessionKey; this.fetcher=(...args)=>fetcher.call(globalThis,...args); this.locks=locks; this.refreshing=null;
   }
   session() {
     try {
@@ -27,6 +27,7 @@ export class SupabaseConnection {
       if (!response.ok) {
         let message='Не вдалося зв’язатися з хмарою. Слова залишилися на пристрої.';
         if (path.includes('/token') && response.status===400) message='Перевір пошту й пароль. Якщо вхід працював раніше — увійди повторно.';
+        else if(response.status===401 && /invalid api key/i.test(value?.message || '')) message='Supabase відхилив публічний ключ. Перевір config.js та відповідність ключа проєкту.';
         else if(response.status===401) message='Потрібен повторний вхід у словник.';
         else if(response.status===403) message='Немає доступу до хмарного словника. Перевір налаштування Supabase.';
         else if(response.status===429) message='Забагато спроб. Зачекай трохи й повтори.';
@@ -36,7 +37,8 @@ export class SupabaseConnection {
       return value;
     } catch(error) {
       if(error instanceof CloudError)throw error;
-      throw new CloudError('Немає з’єднання з Supabase. Локальні зміни збережено; спробуй синхронізувати пізніше.');
+      const detail=error?.name==='AbortError' ? 'Сервер не відповів за 20 секунд.' : `Причина: ${String(error?.message || 'мережевий запит не виконано').slice(0,140)}`;
+      throw new CloudError(`Не вдалося виконати запит до Supabase. Локальні слова залишилися на пристрої. ${detail}`);
     } finally {clearTimeout(timer);}
   }
   async login(email,password) {return this.saveSession(await this.raw('/auth/v1/token?grant_type=password',{method:'POST',body:{email,password}}));}
