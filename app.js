@@ -13,6 +13,7 @@ const connection = new SupabaseConnection({url:SUPABASE_URL,key:SUPABASE_PUBLISH
 let editing = null, quiz = null, tab = 'quiz', toastTimer, pendingWorker;
 const makeId = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 function notify(message, error = false) {
+  if($('word-editor').open) { $('editor-message').textContent=message; $('editor-message').classList.toggle('error',error); return; }
   clearTimeout(toastTimer); $('toast').textContent = message; $('toast').classList.toggle('error', error); $('toast').hidden = false;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, error ? 9000 : 4500);
 }
@@ -21,14 +22,14 @@ try {
   baseline = localStorage.getItem(STORAGE_KEY);
   if (baseline !== null) {
     try { const saved=JSON.parse(baseline); data=validateBackup(saved); if(saved.cloud) data.cloud=checkedCloud(saved.cloud); }
-    catch { damagedRaw = baseline; warning('Збережені дані не вдалося прочитати. Ми їх не перезаписуємо. У розділі «Копія» збережи пошкоджені дані та віднови справну копію в режимі заміни.'); }
+    catch { damagedRaw = baseline; warning('Збережені дані не вдалося прочитати. Ми їх не перезаписуємо. У «Налаштуваннях» збережи пошкоджені дані та віднови справну копію в режимі заміни.'); }
   }
   const probe = `${STORAGE_KEY}:probe`;
   localStorage.setItem(probe, '1'); localStorage.removeItem(probe);
 } catch { storageUnavailable = true; warning('Браузер не дозволяє локальне збереження. Зміни недоступні. Відкрий сайт у звичайному режимі Safari та перевір вільне місце.'); }
 function commit(next, recovering = false, fromCloud = false) {
   if (storageUnavailable) { notify('Локальне збереження недоступне. Зміни не збережено.', true); return false; }
-  if (damagedRaw !== null && !recovering) { notify('Спочатку віднови справну копію в розділі «Копія».', true); return false; }
+  if (damagedRaw !== null && !recovering) { notify('Спочатку віднови справну копію у «Налаштуваннях».', true); return false; }
   try {
     if (conflict || localStorage.getItem(STORAGE_KEY) !== baseline) {
       conflict = true; warning('Словник змінено в іншій вкладці. Перезавантаж сторінку, щоб отримати актуальні дані. Поточні незбережені зміни буде втрачено.'); return false;
@@ -51,7 +52,7 @@ $('reload').onclick = () => { if (confirm('Перезавантажити? Не�
 function element(tag, text, className) { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
 function render(skipWords=false) {
   $('word-count').textContent = data.words.length;
-  $('available-count').textContent = `У словнику: ${data.words.length}. Слова з’являтимуться у випадковому порядку.`;
+  $('available-count').textContent = data.words.length ? `У словнику: ${data.words.length}` : 'Додай слова, які хочеш запам’ятати.';
   $('start').disabled = !data.words.length; $('quiz-empty').hidden = Boolean(data.words.length);
   $('export').disabled = damagedRaw !== null; $('export-raw').hidden = damagedRaw === null;
   const q = data.lastQuiz;
@@ -61,29 +62,59 @@ function render(skipWords=false) {
 function renderWords() {
   const query = $('search').value.trim().toLocaleLowerCase('uk');
   const words = data.words.filter(w => `${w.en} ${w.uk}`.toLocaleLowerCase('uk').includes(query));
-  $('list-count').textContent = query ? `${words.length} з ${data.words.length}` : `${data.words.length} слів`;
+  $('list-count').textContent = query ? `${words.length} з ${data.words.length}` : `Слів: ${data.words.length}`;
   $('word-list').replaceChildren();
   for (const word of [...words].reverse()) {
     const li = document.createElement('li'); const content = element('div', '', 'word-content');
     content.append(element('strong', word.en), element('p', word.uk));
+    const menu=document.createElement('details'); menu.className='word-menu';
+    const summary=element('summary','⋯'); summary.setAttribute('aria-label',`Дії для ${word.en}`);
+    menu.addEventListener('toggle',()=>{
+      if(!menu.open)return;
+      const bottom=(window.visualViewport?.height || window.innerHeight)+(window.visualViewport?.offsetTop || 0);
+      menu.dataset.side=summary.getBoundingClientRect().bottom+120>bottom-90 ? 'up' : 'down';
+      document.querySelectorAll('.word-menu').forEach(other=>{if(other!==menu)other.open=false;});
+    });
     const actions = element('div', '', 'word-actions');
-    const edit = element('button', 'Редагувати'); edit.type = 'button'; edit.setAttribute('aria-label', `Редагувати ${word.en}`); edit.onclick = () => editWord(word);
+    const edit = element('button', 'Редагувати'); edit.type = 'button'; edit.setAttribute('aria-label', `Редагувати ${word.en}`); edit.onclick = () => {menu.open=false;editWord(word);};
     const del = element('button', 'Видалити', 'delete'); del.type = 'button'; del.setAttribute('aria-label', `Видалити ${word.en}`);
     del.onclick = () => {
+      menu.open=false;
       if (!confirm(`Видалити «${word.en}» зі словника?`)) return;
       if (commit({...data, words:data.words.filter(w => w.id !== word.id)})) { if (editing === word.id) resetForm(); notify('Слово видалено.'); }
     };
-    actions.append(edit, del); li.append(content, actions); $('word-list').append(li);
+    actions.append(edit, del); menu.append(summary,actions); li.append(content, menu); $('word-list').append(li);
   }
-  $('list-empty').textContent = !data.words.length ? 'Тут буде твій словник. Додай перше слово вище.' : !words.length ? 'За цим запитом нічого не знайдено.' : '';
+  $('list-empty').textContent = !data.words.length ? 'Тут буде твій словник. Натисни «+ Додати», щоб почати.' : !words.length ? 'За цим запитом нічого не знайдено.' : '';
 }
-function resetForm() { editing = null; editingOriginal = null; $('word-form').reset(); $('form-title').textContent = 'Додати слово'; $('save-word').textContent = 'Додати слово +'; $('cancel-edit').hidden = true; }
+function resetForm() {
+  editing=null;editingOriginal=null;$('word-form').reset();
+  $('form-title').textContent='Додати слово';$('save-word').textContent='Додати';
+  $('add-another-row').hidden=false;$('editor-message').textContent='';
+}
+function closeEditor(force=false) {
+  if(!force && ($('english').value.trim() || $('ukrainian').value.trim()) && !confirm('Закрити форму без збереження?'))return;
+  $('word-editor').close();resetForm();
+}
+function openEditor() {
+  if(!$('word-editor').open){resetForm();$('word-editor').showModal();}
+  $('english').focus();
+}
 function editWord(word) {
-  if (($('english').value || $('ukrainian').value) && !confirm('Замінити незбережені поля вибраним словом?')) return;
-  editing = word.id; editingOriginal = {...word}; $('english').value = word.en; $('ukrainian').value = word.uk;
-  $('form-title').textContent = 'Редагувати слово'; $('save-word').textContent = 'Зберегти зміни'; $('cancel-edit').hidden = false;
-  $('word-form').scrollIntoView({block:'start'}); $('english').focus();
+  if(($('english').value || $('ukrainian').value) && !confirm('Замінити незбережені поля вибраним словом?'))return;
+  resetForm();editing=word.id;editingOriginal={...word};
+  $('english').value=word.en;$('ukrainian').value=word.uk;
+  $('form-title').textContent='Редагувати слово';$('save-word').textContent='Зберегти';
+  $('add-another-row').hidden=true;
+  if(!$('word-editor').open)$('word-editor').showModal();
+  $('english').focus();
 }
+$('quick-add').onclick=openEditor;$('add-word').onclick=openEditor;
+$('close-editor').onclick=()=>closeEditor();$('cancel-edit').onclick=()=>closeEditor();
+$('word-editor').addEventListener('cancel',event=>{event.preventDefault();closeEditor();});
+$('english').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();$('ukrainian').focus();}});
+document.addEventListener('click',event=>{if(!event.target.closest('.word-menu'))document.querySelectorAll('.word-menu').forEach(menu=>{menu.open=false;});});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.word-menu').forEach(menu=>{menu.open=false;});});
 $('word-form').onsubmit = event => {
   event.preventDefault();
   if(editing && !sameContent({...editingOriginal,deleted:false}, {...data.words.find(w=>w.id===editing),deleted:false})) { notify('Слово змінилося під час редагування. Скопіюй свої поля за потреби, скасуй редагування та відкрий слово знову.',true); return; }
@@ -93,21 +124,26 @@ $('word-form').onsubmit = event => {
   if (data.words.some(w => w.id !== word.id && wordKey(w) === wordKey(word))) { notify('Така картка вже є у словнику.', true); return; }
   const words = editing ? data.words.map(w => w.id === editing ? word : w) : [...data.words, word];
   const wasEditing = Boolean(editing);
-  if (commit({...data, words})) { resetForm(); $('english').focus(); notify(wasEditing ? 'Зміни збережено.' : 'Слово додано.'); }
+  const keepOpen=!wasEditing && $('add-another').checked;
+  if(commit({...data,words})){
+    if(keepOpen){resetForm();$('english').focus();}else{closeEditor(true);}
+    notify(wasEditing ? 'Зміни збережено.' : 'Слово додано ✓');
+  }
 };
-$('cancel-edit').onclick = resetForm; $('search').oninput = renderWords;
+$('search').oninput = renderWords;
 function showTab(next) {
-  if (next === tab) return;
+  if (next === tab) return true;
   if (quiz && !quiz.finished && next !== 'quiz') {
-    if (!confirm('Залишити квіз? Поточні відповіді не буде збережено.')) return;
+    if (!confirm('Залишити квіз? Поточні відповіді не буде збережено.')) return false;
     quiz = null; showQuizScreen('setup');
   }
   tab = next;
   for (const name of ['quiz','words','backup']) $(`${name}-view`).hidden = name !== next;
   document.querySelectorAll('[data-tab]').forEach(button => { if (button.dataset.tab === next) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current'); });
+  document.activeElement?.blur();window.scrollTo({top:0});return true;
 }
 document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => showTab(button.dataset.tab));
-$('add-first').onclick = () => { showTab('words'); $('english').focus(); };
+$('add-first').onclick = () => { if(showTab('words'))openEditor(); };
 function showQuizScreen(screen) { for (const name of ['setup','active','result']) $(`quiz-${name}`).hidden = name !== screen; }
 function startQuiz(words, direction, limit = words.length) {
   quiz = {words: shuffled(words, limit), direction, index:0, answers:[], checked:false, finished:false};
@@ -162,7 +198,7 @@ function finishQuiz() {
   for (const a of wrong) {
     const div = element('div', '', 'mistake'); div.append(element('strong', variants(quiz.direction === 'en-uk' ? a.word.en : a.word.uk)[0]), element('p', `Твоя відповідь: ${a.skipped ? 'пропущено' : a.answer}`, 'muted'), element('p', `Правильно: ${a.expected}`)); $('mistakes').append(div);
   }
-  showQuizScreen('result'); $('quiz-result').focus();
+  document.activeElement?.blur();showQuizScreen('result'); $('quiz-result').focus();
 }
 $('again').onclick = () => { quiz = null; showQuizScreen('setup'); };
 $('retry').onclick = () => startQuiz(quiz.answers.filter(a => !a.correct).map(a => a.word), quiz.direction);
@@ -220,14 +256,30 @@ function renderAccount() {
   $('login-form').hidden=Boolean(session && owner?.owner===session.user.id);
   $('signed-in').hidden=$('login-form').hidden===false;
   $('account-email').textContent=session?.user.email || owner?.email || '';
-  $('account-shortcut').textContent=owner ? 'Мій акаунт' : 'Локально';
+
   $('sync-now').hidden=!canSync(); $('sync-now').disabled=syncBusy;
-  $('account-description').textContent=owner ? `Ця локальна копія прив’язана до ${owner.email}. Вхід з тією самою поштою відновить синхронізацію. Підсумок квізу залишається на пристрої.` : 'Поки що слова зберігаються лише тут. Увійди для синхронізації.';
+  $('account-description').textContent=owner ? `Слова синхронізуються після входу. Підсумок квізу зберігається лише тут.` : 'Поки що слова зберігаються лише тут. Увійди для синхронізації.';
   const pending=owner ? pendingCount(data.words,owner.base) : 0;
   let status=syncMessage || (syncBusy ? 'Синхронізація…' : owner ? pending ? `На пристрої є непередані зміни: ${pending}.` : 'Локальна копія. Перевіряємо хмару після входу.' : 'Локально · увійди для синхронізації');
   if(owner && !session)status=`Увійди повторно для синхронізації.${pending ? ` Непередані зміни: ${pending}.` : ''}`;
   if(owner && navigator.onLine===false)status=`Офлайн · ${pending ? `непередані зміни: ${pending}` : 'локальний словник доступний'}`;
-  $('sync-status').textContent=status; $('sync-status').classList.toggle('sync-error',syncError);
+  $('sync-status').textContent=status;$('sync-status').classList.toggle('sync-error',syncError);
+  let state='guest',label='Увійти';
+  if(owner){
+    if(syncError){state='error';label='Перевір зв’язок';}
+    else if(navigator.onLine===false){state='offline';label='Офлайн';}
+    else if(!session){state='guest';label='Увійти';}
+    else if(syncBusy){state='busy';label='Синхронізація';}
+    else if(syncConflicts.length){state='error';label='Обери версію';}
+    else if(pending){state='pending';label=`Очікує: ${pending}`;}
+    else {state=syncMessage.startsWith('Синхронізовано')?'synced':'busy';label=state==='synced'?'Збережено':'Підключено';}
+  }
+  $('account-shortcut').dataset.state=state;$('account-shortcut').setAttribute('aria-label',`Стан словника: ${status}. Відкрити налаштування`);
+  $('sync-chip-label').textContent=label;
+  const important=Boolean(owner && (syncError || pending || syncConflicts.length));
+  $('sync-alert').hidden=!important;
+  $('sync-alert-text').textContent=syncError ? 'Синхронізацію не завершено. Слова залишаються на пристрої.' : syncConflicts.length ? 'Є різні версії слів. Обери потрібну в налаштуваннях.' : `Є непередані зміни: ${pending}. ${navigator.onLine===false?'Відкрий застосунок з інтернетом для синхронізації.':'Збережено на цьому пристрої.'}`;
+
 }
 function scheduleSync(delay=700) {
   clearTimeout(syncTimer);
@@ -270,7 +322,7 @@ async function runSync() {
       if(!persistCloud({...data,cloud:{...data.cloud,base}}))throw new Error('Хмарний запис отримано, але локальне збереження не вдалося. Зроби JSON-копію.');
     }
     const pending=pendingCount(data.words,data.cloud.base);
-    syncMessage=syncConflicts.length ? `Потрібно обрати версію: ${syncConflicts.length}. Відкрий «Вхід / копія».` : pending ? `Непередані зміни: ${pending}.` : `Синхронізовано · ${new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}`;
+    syncMessage=syncConflicts.length ? `Потрібно обрати версію: ${syncConflicts.length}. Відкрий «Налаштування».` : pending ? `Непередані зміни: ${pending}.` : `Синхронізовано · ${new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}`;
   } catch(error) {syncMessage=error.message || 'Синхронізацію не завершено. Локальні зміни залишилися на пристрої.';syncError=true;syncAgain=false;}
   finally {syncBusy=false;renderAccount();if(syncAgain)scheduleSync(1500);}
 }
@@ -304,6 +356,7 @@ function resolveConflict(item, choice) {
   }
 }
 $('account-shortcut').onclick=()=>showTab('backup');
+$('show-sync').onclick=()=>showTab('backup');
 $('sync-now').onclick=()=>runSync();
 $('login-form').onsubmit=async event=>{
   event.preventDefault();if(loggingIn)return;
@@ -328,3 +381,16 @@ window.addEventListener('focus',()=>scheduleSync(0));
 window.addEventListener('offline',()=>renderAccount());
 setInterval(()=>{if(document.visibilityState==='visible')scheduleSync(0);},30000);
 renderAccount();scheduleSync(0);
+
+// Keep the bottom navigation clear of the software keyboard on narrow screens.
+function updateViewport() {
+  const viewport=window.visualViewport;
+  const height=viewport?.height || window.innerHeight;
+  document.documentElement.style.setProperty('--viewport-height',`${height}px`);
+  const keyboard=Boolean(viewport && window.innerHeight-height>150 && /INPUT|TEXTAREA/.test(document.activeElement?.tagName || ''));
+  document.body.classList.toggle('keyboard-open',keyboard);
+}
+window.visualViewport?.addEventListener('resize',updateViewport);
+window.addEventListener('resize',updateViewport);
+document.addEventListener('focusout',()=>setTimeout(updateViewport,0));
+updateViewport();
