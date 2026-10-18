@@ -1,8 +1,15 @@
 import {MAX_WORDS, emptyData, validateText, validateBackup, wordKey, mergeWords, isCorrect, variants, shuffled} from './core.mjs';
+import {SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY} from './config.js';
+import {plainWord, sameContent, checkedCloud, desiredRow, pendingCount, reconcile} from './sync.mjs';
+import {SupabaseConnection} from './cloud.mjs';
 const $ = id => document.getElementById(id);
 // Path isolates this dictionary from other projects on the same GitHub Pages origin.
 const STORAGE_KEY = `my-vocabulary:v1:${new URL('./', location.href).pathname}`;
 let data = emptyData(), baseline = null, damagedRaw = null, storageUnavailable = false, conflict = false;
+let editingOriginal = null;
+let syncBusy = false, syncAgain = false, syncTimer, syncConflicts = [], syncMessage = '', syncError = false, loggingIn = false;
+const SESSION_KEY = `${STORAGE_KEY}:session:${SUPABASE_URL}`;
+const connection = new SupabaseConnection({url:SUPABASE_URL,key:SUPABASE_PUBLISHABLE_KEY,storage:localStorage,sessionKey:SESSION_KEY});
 let editing = null, quiz = null, tab = 'quiz', toastTimer, pendingWorker;
 const makeId = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 function notify(message, error = false) {
@@ -13,13 +20,13 @@ function warning(message) { $('storage-warning-text').textContent = message; $('
 try {
   baseline = localStorage.getItem(STORAGE_KEY);
   if (baseline !== null) {
-    try { data = validateBackup(JSON.parse(baseline)); }
+    try { const saved=JSON.parse(baseline); data=validateBackup(saved); if(saved.cloud) data.cloud=checkedCloud(saved.cloud); }
     catch { damagedRaw = baseline; warning('Збережені дані не вдалося прочитати. Ми їх не перезаписуємо. У розділі «Копія» збережи пошкоджені дані та віднови справну копію в режимі заміни.'); }
   }
   const probe = `${STORAGE_KEY}:probe`;
   localStorage.setItem(probe, '1'); localStorage.removeItem(probe);
 } catch { storageUnavailable = true; warning('Браузер не дозволяє локальне збереження. Зміни недоступні. Відкрий сайт у звичайному режимі Safari та перевір вільне місце.'); }
-function commit(next, recovering = false) {
+function commit(next, recovering = false, fromCloud = false) {
   if (storageUnavailable) { notify('Локальне збереження недоступне. Зміни не збережено.', true); return false; }
   if (damagedRaw !== null && !recovering) { notify('Спочатку віднови справну копію в розділі «Копія».', true); return false; }
   try {
@@ -28,26 +35,28 @@ function commit(next, recovering = false) {
     }
     const serialized = JSON.stringify(next);
     localStorage.setItem(STORAGE_KEY, serialized);
+    const wordsChanged = next.words !== data.words;
     baseline = serialized; data = next;
     if (recovering) { damagedRaw = null; $('storage-warning').hidden = true; $('export-raw').hidden = true; }
-    render(); return true;
+    render(!wordsChanged); if(syncConflicts.length) renderConflicts(); if(!fromCloud && data.cloud) { syncMessage = ''; scheduleSync(); } renderAccount(); return true;
   } catch { notify('Не вдалося зберегти: перевір вільне місце або налаштування браузера. Попередній словник залишився без змін.', true); return false; }
 }
 window.addEventListener('storage', event => {
+  if (event.key === SESSION_KEY) { renderAccount(); scheduleSync(); }
   if ((event.key === STORAGE_KEY || event.key === null) && event.newValue !== baseline) {
     conflict = true; warning('Дані змінилися в іншій вкладці. Перезавантаж сторінку перед наступними змінами.');
   }
 });
 $('reload').onclick = () => { if (confirm('Перезавантажити? Незбережені поля й поточний квіз буде втрачено.')) location.reload(); };
 function element(tag, text, className) { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
-function render() {
+function render(skipWords=false) {
   $('word-count').textContent = data.words.length;
   $('available-count').textContent = `У словнику: ${data.words.length}. Слова з’являтимуться у випадковому порядку.`;
   $('start').disabled = !data.words.length; $('quiz-empty').hidden = Boolean(data.words.length);
   $('export').disabled = damagedRaw !== null; $('export-raw').hidden = damagedRaw === null;
   const q = data.lastQuiz;
   $('last-quiz').textContent = q ? `Остання практика · ${new Date(q.date).toLocaleDateString('uk-UA')} · ${q.direction === 'en-uk' ? 'EN → UK' : 'UK → EN'} · ${q.correct} з ${q.total}` : '';
-  renderWords();
+  if(!skipWords) renderWords();
 }
 function renderWords() {
   const query = $('search').value.trim().toLocaleLowerCase('uk');
@@ -68,15 +77,16 @@ function renderWords() {
   }
   $('list-empty').textContent = !data.words.length ? 'Тут буде твій словник. Додай перше слово вище.' : !words.length ? 'За цим запитом нічого не знайдено.' : '';
 }
-function resetForm() { editing = null; $('word-form').reset(); $('form-title').textContent = 'Додати слово'; $('save-word').textContent = 'Додати слово +'; $('cancel-edit').hidden = true; }
+function resetForm() { editing = null; editingOriginal = null; $('word-form').reset(); $('form-title').textContent = 'Додати слово'; $('save-word').textContent = 'Додати слово +'; $('cancel-edit').hidden = true; }
 function editWord(word) {
   if (($('english').value || $('ukrainian').value) && !confirm('Замінити незбережені поля вибраним словом?')) return;
-  editing = word.id; $('english').value = word.en; $('ukrainian').value = word.uk;
+  editing = word.id; editingOriginal = {...word}; $('english').value = word.en; $('ukrainian').value = word.uk;
   $('form-title').textContent = 'Редагувати слово'; $('save-word').textContent = 'Зберегти зміни'; $('cancel-edit').hidden = false;
   $('word-form').scrollIntoView({block:'start'}); $('english').focus();
 }
 $('word-form').onsubmit = event => {
   event.preventDefault();
+  if(editing && !sameContent({...editingOriginal,deleted:false}, {...data.words.find(w=>w.id===editing),deleted:false})) { notify('Слово змінилося під час редагування. Скопіюй свої поля за потреби, скасуй редагування та відкрий слово знову.',true); return; }
   const word = {id: editing || makeId(), en:$('english').value.trim(), uk:$('ukrainian').value.trim()};
   if (!validateText(word.en) || !validateText(word.uk)) { notify('Введи слово та переклад: до 500 символів у кожному полі.', true); return; }
   if (!editing && data.words.length >= MAX_WORDS) { notify('Ліміт першої версії — 5000 слів.', true); return; }
@@ -161,7 +171,7 @@ function download(contents, filename) {
   const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 $('export').onclick = () => {
-  download(JSON.stringify({...data, exportedAt:new Date().toISOString()}, null, 2), `my-vocabulary-${new Date().toISOString().slice(0,10)}.json`);
+  download(JSON.stringify({schemaVersion:1, words:data.words, lastQuiz:data.lastQuiz, exportedAt:new Date().toISOString()}, null, 2), `my-vocabulary-${new Date().toISOString().slice(0,10)}.json`);
   notify('Копію підготовлено. Перевір завантаження у «Файли».');
 };
 $('export-raw').onclick = () => { if (damagedRaw !== null) download(damagedRaw, 'my-vocabulary-recovery.json'); };
@@ -173,8 +183,8 @@ $('import-form').onsubmit = async event => {
   try {
     const incoming = validateBackup(JSON.parse(await file.text()));
     if (damagedRaw !== null && mode !== 'replace') throw new Error('Для відновлення пошкоджених даних обери «Замінити весь словник». Спочатку збережи пошкоджені дані.');
-    if (mode === 'replace' && !confirm(`Замінити весь поточний словник (${data.words.length} слів) копією (${incoming.words.length} слів)? Спочатку збережи експорт, якщо потрібні старі слова.`)) return;
-    const next = mode === 'replace' ? incoming : {...data, words:mergeWords(data.words, incoming.words, makeId)};
+    if (mode === 'replace' && !confirm(`Замінити весь поточний словник (${data.words.length} слів) копією (${incoming.words.length} слів)? Після входу ця заміна пошириться на хмару та інші пристрої. Спочатку збережи експорт, якщо потрібні старі слова.`)) return;
+    const next = mode === 'replace' ? {...incoming,...(data.cloud?{cloud:data.cloud}:{})} : {...data, words:mergeWords(data.words, incoming.words, makeId)};
     const added = next.words.length - data.words.length;
     if (commit(next, mode === 'replace')) { resetForm(); $('import-form').reset(); notify(mode === 'replace' ? `Відновлено ${next.words.length} слів.` : `Додано ${added} слів. Дублікати пропущено.`); }
   } catch (err) { notify(err instanceof SyntaxError ? 'Це не коректний JSON-файл. Дані не змінено.' : err.message || 'Не вдалося прочитати копію.', true); }
@@ -196,5 +206,125 @@ let updating = false;
 $('update').onclick = () => { if (pendingWorker && confirm('Оновити зараз? Поточний квіз і незбережені поля буде втрачено.')) { updating = true; pendingWorker.postMessage({type:'SKIP_WAITING'}); } };
 navigator.serviceWorker?.addEventListener('controllerchange', () => { if (updating) location.reload(); });
 window.addEventListener('offline', () => { $('offline-status').textContent = 'Офлайн'; });
-window.addEventListener('online', () => { $('offline-status').textContent = 'Знову онлайн'; });
+window.addEventListener('online', () => { $('offline-status').textContent = 'Знову онлайн'; scheduleSync(); });
 render();
+
+
+// The old storage key and JSON backup format stay compatible with version 1.
+function canSync() {
+  const session=connection.session();
+  return session && data.cloud?.owner===session.user.id && !storageUnavailable && damagedRaw===null && !conflict;
+}
+function renderAccount() {
+  const session=connection.session(), owner=data.cloud;
+  $('login-form').hidden=Boolean(session && owner?.owner===session.user.id);
+  $('signed-in').hidden=$('login-form').hidden===false;
+  $('account-email').textContent=session?.user.email || owner?.email || '';
+  $('account-shortcut').textContent=owner ? 'Мій акаунт' : 'Локально';
+  $('sync-now').hidden=!canSync(); $('sync-now').disabled=syncBusy;
+  $('account-description').textContent=owner ? `Ця локальна копія прив’язана до ${owner.email}. Вхід з тією самою поштою відновить синхронізацію. Підсумок квізу залишається на пристрої.` : 'Поки що слова зберігаються лише тут. Увійди для синхронізації.';
+  const pending=owner ? pendingCount(data.words,owner.base) : 0;
+  let status=syncMessage || (syncBusy ? 'Синхронізація…' : owner ? pending ? `На пристрої є непередані зміни: ${pending}.` : 'Локальна копія. Перевіряємо хмару після входу.' : 'Локально · увійди для синхронізації');
+  if(owner && !session)status=`Увійди повторно для синхронізації.${pending ? ` Непередані зміни: ${pending}.` : ''}`;
+  if(owner && navigator.onLine===false)status=`Офлайн · ${pending ? `непередані зміни: ${pending}` : 'локальний словник доступний'}`;
+  $('sync-status').textContent=status; $('sync-status').classList.toggle('sync-error',syncError);
+}
+function scheduleSync(delay=700) {
+  clearTimeout(syncTimer);
+  if(syncBusy) {syncAgain=true;return;}
+  if(canSync() && navigator.onLine!==false)syncTimer=setTimeout(()=>runSync(),delay);
+}
+function persistCloud(next) {
+  // Metadata acknowledgements must not rebuild a long word list or move focus.
+  if(next.words.length===data.words.length && next.words.every((w,i)=>w.id===data.words[i].id && w.en===data.words[i].en && w.uk===data.words[i].uk)) next={...next,words:data.words};
+  return commit(next,false,true);
+}
+async function runSync() {
+  if(syncBusy){syncAgain=true;return;}
+  if(!canSync() || navigator.onLine===false){renderAccount();return;}
+  syncBusy=true;syncAgain=false;syncMessage='';syncError=false;renderAccount();
+  const owner=data.cloud.owner;
+  try {
+    const remote=await connection.list(owner);
+    if(!canSync() || data.cloud.owner!==owner)return;
+    // Read the latest local words AFTER the network wait; the user may have typed.
+    const plan=reconcile(data.words,data.cloud.base,remote);
+    if(!persistCloud({...data,words:plan.words,cloud:{...data.cloud,base:plan.base}}))throw new Error('Не вдалося зберегти локальну копію. Синхронізацію зупинено.');
+    syncConflicts=plan.conflicts;renderConflicts();
+    for(const operation of plan.writes){
+      if(!canSync() || data.cloud.owner!==owner)break;
+      // Do not send a stale operation if the user edited it while we were awaiting another request.
+      if(!sameContent(desiredRow(data.words,data.cloud.base,operation.id),operation.desired)){syncAgain=true;continue;}
+      // Stage an INSERT before sending it. A lost response followed by an offline
+      // deletion must not resurrect the word on the next pull.
+      if(operation.revision===null && !data.cloud.base.some(r=>r.id===operation.id)){
+        const staged={...operation.desired,revision:0};
+        if(!persistCloud({...data,cloud:{...data.cloud,base:[...data.cloud.base,staged]}}))throw new Error('Не вдалося зберегти чергу синхронізації.');
+      }
+      let row;
+      try {row=await connection.write(owner,operation);}
+      catch(error){if(error.status===409){syncAgain=true;continue;}throw error;}
+      if(!canSync() || data.cloud.owner!==owner)break;
+      const base=data.cloud.base.filter(r=>r.id!==row.id);base.push(row);
+      // Only acknowledge the server revision. Any edits made in flight remain pending.
+      if(!persistCloud({...data,cloud:{...data.cloud,base}}))throw new Error('Хмарний запис отримано, але локальне збереження не вдалося. Зроби JSON-копію.');
+    }
+    const pending=pendingCount(data.words,data.cloud.base);
+    syncMessage=syncConflicts.length ? `Потрібно обрати версію: ${syncConflicts.length}. Відкрий «Вхід / копія».` : pending ? `Непередані зміни: ${pending}.` : `Синхронізовано · ${new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}`;
+  } catch(error) {syncMessage=error.message || 'Синхронізацію не завершено. Локальні зміни залишилися на пристрої.';syncError=true;syncAgain=false;}
+  finally {syncBusy=false;renderAccount();if(syncAgain)scheduleSync(1500);}
+}
+function renderConflicts() {
+  $('sync-conflicts').hidden=!syncConflicts.length;$('conflict-list').replaceChildren();
+  for(const item of syncConflicts){
+    const div=element('div','','conflict-card');
+    const describe=row=>!row||row.deleted ? 'Видалено' : `${row.en} → ${row.uk}`;
+    const local=desiredRow(data.words,data.cloud.base,item.id) || item.local;
+    div.append(element('p',`На цьому пристрої: ${describe(local)}`),element('p',`У хмарі: ${describe(item.remote)}`));
+    const buttons=element('div','','button-row');
+    for(const [choice,label] of [['local','Залишити мою'],['remote','Взяти з хмари']]){
+      const button=element('button',label,'secondary');button.type='button';
+      button.onclick=()=>resolveConflict(item,choice);buttons.append(button);
+    }
+    div.append(buttons);$('conflict-list').append(div);
+  }
+}
+function resolveConflict(item, choice) {
+  if(syncBusy){notify('Дочекайся завершення синхронізації.');return;}
+  if(!confirm(choice==='local' ? 'Передати поточну локальну версію в хмару? Якщо хмарна версія знову змінилася, застосунок перепитає.' : 'Замінити локальну версію показаною хмарною?'))return;
+  let words=data.words;
+  if(choice==='remote'){
+    words=words.filter(w=>w.id!==item.id);
+    if(item.remote && !item.remote.deleted)words=[...words,plainWord(item.remote)];
+  }
+  const base=data.cloud.base.filter(r=>r.id!==item.id);
+  if(item.remote)base.push(item.remote);
+  if(persistCloud({...data,words,cloud:{...data.cloud,base}})){
+    syncConflicts=syncConflicts.filter(c=>c.id!==item.id);syncMessage='';renderConflicts();renderAccount();scheduleSync(0);
+  }
+}
+$('account-shortcut').onclick=()=>showTab('backup');
+$('sync-now').onclick=()=>runSync();
+$('login-form').onsubmit=async event=>{
+  event.preventDefault();if(loggingIn)return;
+  if(storageUnavailable || damagedRaw!==null || conflict){notify('Спочатку усунь попередження про локальне сховище.',true);return;}
+  loggingIn=true;$('login').disabled=true;
+  try {
+    const session=await connection.login($('login-email').value.trim(),$('login-password').value);
+    if(data.cloud && data.cloud.owner!==session.user.id){await connection.logout();throw new Error('Цей словник належить іншому акаунту. Увійди з попередньою поштою; для іншого акаунта використовуй окремий профіль браузера.');}
+    if(!data.cloud && !persistCloud({...data,cloud:{owner:session.user.id,email:session.user.email,base:[]}})){await connection.logout();throw new Error('Не вдалося зберегти підключення на пристрої.');}
+    syncMessage='';notify('Вхід виконано. Синхронізуємо слова.');await runSync();
+  }catch(error){notify(error.message || 'Не вдалося увійти.',true);}
+  finally{loggingIn=false;$('login').disabled=false;$('login-password').value='';renderAccount();}
+};
+$('logout').onclick=async()=>{
+  const pending=data.cloud ? pendingCount(data.words,data.cloud.base) : 0;
+  if(!confirm(`Вийти? Локальна копія залишиться на цьому пристрої.${pending ? ` Непередані зміни: ${pending}.` : ''}`))return;
+  // Remove credentials synchronously before awaiting the remote logout.
+  const loggingOut=connection.logout();renderAccount();await loggingOut;notify('Вихід виконано. Локальний словник доступний.');
+};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')scheduleSync(0);});
+window.addEventListener('focus',()=>scheduleSync(0));
+window.addEventListener('offline',()=>renderAccount());
+setInterval(()=>{if(document.visibilityState==='visible')scheduleSync(0);},30000);
+renderAccount();scheduleSync(0);
