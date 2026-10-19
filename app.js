@@ -1,4 +1,4 @@
-import {MAX_WORDS, emptyData, validateText, validateBackup, wordKey, mergeWords, isCorrect, variants, shuffled, wordExtras, CATEGORY_LABELS} from './core.mjs';
+import {MAX_WORDS, emptyData, validateText, validateBackup, wordKey, mergeWords, isCorrect, variants, shuffled, wordExtras, CATEGORY_LABELS, POS_LABELS} from './core.mjs';
 import {SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY} from './config.js';
 import {plainWord, sameContent, checkedCloud, desiredRow, pendingCount, reconcile} from './sync.mjs';
 import {SupabaseConnection} from './cloud.mjs';
@@ -68,9 +68,11 @@ function renderWords() {
     const li = document.createElement('li'); const content = element('div', '', 'word-content');
     content.append(element('strong', word.en));
     if(word.category)content.append(element('span',CATEGORY_LABELS[word.category],'word-label'));
+    if(word.category==='word' && word.part_of_speech)content.append(element('span',POS_LABELS[word.part_of_speech],'pos-label'));
     content.append(element('p', word.uk));
-    if(word.example_en || word.example_uk || word.note){
-      const details=element('details','','word-examples');details.append(element('summary','Приклад і примітка'));
+    if(word.pattern || word.example_en || word.example_uk || word.note){
+      const details=element('details','','word-examples');details.append(element('summary',word.pattern ? 'Конструкція та приклад' : 'Приклад і примітка'));
+      if(word.pattern)details.append(element('p',`Pattern: ${word.pattern}`,'word-pattern'));
       if(word.example_en)details.append(element('p',word.example_en));
       if(word.example_uk)details.append(element('p',word.example_uk,'muted'));
       if(word.note)details.append(element('p',word.note,'hint'));
@@ -98,12 +100,23 @@ function renderWords() {
 }
 function resetForm() {
   editing=null;editingOriginal=null;$('word-form').reset();
+  $('category').value='word';updateCategoryFields();
   $('form-title').textContent='Додати слово';$('save-word').textContent='Додати';
   $('add-another-row').hidden=false;$('editor-message').textContent='';
 }
-function selectedCategory() {return document.querySelector('input[name="category"]:checked')?.value || '';}
+function selectedCategory() {return $('category').value;}
+function updateCategoryFields() {
+  const isWord=selectedCategory()==='word';
+  $('pos-row').hidden=!isWord;$('part-of-speech').disabled=!isWord;
+  if(!isWord)$('part-of-speech').value='';
+}
+$('category').addEventListener('change',updateCategoryFields);
+function editorHasContent() {
+  return selectedCategory()!=='word' || $('part-of-speech').value ||
+    ['english','ukrainian','example-en','example-uk','word-note','pattern'].some(id=>$(id).value.trim());
+}
 function closeEditor(force=false) {
-  if(!force && (selectedCategory() || ['english','ukrainian','example-en','example-uk','word-note'].some(id=>$(id).value.trim())) && !confirm('Закрити форму без збереження?'))return;
+  if(!force && editorHasContent() && !confirm('Закрити форму без збереження?'))return;
   $('word-editor').close();resetForm();
 }
 function openEditor() {
@@ -111,11 +124,12 @@ function openEditor() {
   $('english').focus();
 }
 function editWord(word) {
-  if((selectedCategory() || ['english','ukrainian','example-en','example-uk','word-note'].some(id=>$(id).value.trim())) && !confirm('Замінити незбережені поля вибраним словом?'))return;
+  if($('word-editor').open && editorHasContent() && !confirm('Замінити незбережені поля вибраним словом?'))return;
   resetForm();editing=word.id;editingOriginal={...word};
   $('english').value=word.en;$('ukrainian').value=word.uk;
   $('example-en').value=word.example_en || '';$('example-uk').value=word.example_uk || '';$('word-note').value=word.note || '';
-  document.querySelectorAll('input[name="category"]').forEach(input=>{input.checked=input.value===(word.category || '');});
+  $('category').value=word.category || '';$('part-of-speech').value=word.part_of_speech || '';
+  $('pattern').value=word.pattern || '';updateCategoryFields();
   $('form-title').textContent='Редагувати слово';$('save-word').textContent='Зберегти';
   $('add-another-row').hidden=true;
   if(!$('word-editor').open)$('word-editor').showModal();
@@ -129,9 +143,11 @@ document.addEventListener('click',event=>{if(!event.target.closest('.word-menu')
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.word-menu').forEach(menu=>{menu.open=false;});});
 $('word-form').onsubmit = event => {
   event.preventDefault();
+  if(!Object.hasOwn(CATEGORY_LABELS,selectedCategory())){notify('Обери категорію картки.',true);return;}
   if(editing && !sameContent({...editingOriginal,deleted:false}, {...data.words.find(w=>w.id===editing),deleted:false})) { notify('Слово змінилося під час редагування. Скопіюй свої поля за потреби, скасуй редагування та відкрий слово знову.',true); return; }
   const word = {id: editing || makeId(), en:$('english').value.trim(), uk:$('ukrainian').value.trim(),
-    ...wordExtras({example_en:$('example-en').value,example_uk:$('example-uk').value,note:$('word-note').value,category:selectedCategory()})};
+    ...wordExtras({example_en:$('example-en').value,example_uk:$('example-uk').value,note:$('word-note').value,category:selectedCategory(),
+      part_of_speech:selectedCategory()==='word' ? $('part-of-speech').value : '',pattern:$('pattern').value})};
   if (!validateText(word.en) || !validateText(word.uk)) { notify('Введи слово та переклад: до 500 символів у кожному полі.', true); return; }
   if (!editing && data.words.length >= MAX_WORDS) { notify('Ліміт першої версії — 5000 слів.', true); return; }
   if (data.words.some(w => w.id !== word.id && wordKey(w) === wordKey(word))) { notify('Така картка вже є у словнику.', true); return; }
@@ -186,6 +202,7 @@ function checkAnswer(skipped = false) {
   $('feedback-title').textContent = correct ? 'Правильно ✓' : skipped ? 'Наступного разу згадаєш.' : 'Поки що не збігається.';
   $('expected').textContent = `Правильна відповідь: ${expected}`;
   $('quiz-example').replaceChildren();
+  if(word.pattern)$('quiz-example').append(element('p',`Pattern: ${word.pattern}`,'word-pattern'));
   if(word.example_en)$('quiz-example').append(element('p',word.example_en));
   if(word.example_uk)$('quiz-example').append(element('p',word.example_uk,'muted'));
   if(word.note)$('quiz-example').append(element('p',word.note,'hint'));
@@ -347,7 +364,8 @@ function renderConflicts() {
   $('sync-conflicts').hidden=!syncConflicts.length;$('conflict-list').replaceChildren();
   for(const item of syncConflicts){
     const div=element('div','','conflict-card');
-    const describe=row=>!row||row.deleted ? 'Видалено' : [ `${row.en} → ${row.uk}`,CATEGORY_LABELS[row.category],row.example_en,row.example_uk,row.note ].filter(Boolean).join(' · ');
+    const describe=row=>!row||row.deleted ? 'Видалено' : [ `${row.en} → ${row.uk}`,CATEGORY_LABELS[row.category],POS_LABELS[row.part_of_speech],
+      row.pattern && `Pattern: ${row.pattern}`,row.example_en,row.example_uk,row.note ].filter(Boolean).join(' · ');
     const local=desiredRow(data.words,data.cloud.base,item.id) || item.local;
     div.append(element('p',`На цьому пристрої: ${describe(local)}`),element('p',`У хмарі: ${describe(item.remote)}`));
     const buttons=element('div','','button-row');

@@ -1,21 +1,25 @@
 // Pure data and answer logic shared by the app and its dependency-free tests.
 export const MAX_WORDS = 5000;
 export const MAX_TEXT = 500;
-export const CATEGORY_LABELS = {word:'Слово',phrasal_verb:'Фразове дієслово',expression:'Вираз'};
+export const CATEGORY_LABELS = {word:'Word',phrasal_verb:'Phrasal Verb',collocation:'Collocation',expression:'Expression'};
+export const POS_LABELS = {noun:'Іменник',verb:'Дієслово',adjective:'Прикметник',adverb:'Прислівник',other:'Інше'};
 export function wordCategory(word) {
   const value=word.category ?? '';
-  if (!['','word','phrasal_verb','expression'].includes(value)) throw new Error('Невідома позначка картки. Дані не змінено.');
+  if (!['','word','phrasal_verb','collocation','expression'].includes(value)) throw new Error('Невідома категорія картки. Дані не змінено.');
   return value;
 }
-export const EXTRA_LIMITS = {example_en:2000, example_uk:2000, note:500};
+export const EXTRA_LIMITS = {example_en:2000, example_uk:2000, note:500,pattern:1000};
 export function wordExtras(word) {
   const extras = {};
   for (const [key, limit] of Object.entries(EXTRA_LIMITS)) {
     const value = word[key] ?? '';
-    if (typeof value !== 'string' || value.length > limit) throw new Error('Некоректний приклад або примітка в картці.');
+    if (typeof value !== 'string' || value.length > limit) throw new Error('Некоректний приклад, Pattern або примітка в картці.');
     extras[key] = value.trim();
   }
-  return {...extras,category:wordCategory(word)};
+  const category=wordCategory(word),pos=word.part_of_speech ?? '';
+  if (!['','noun','verb','adjective','adverb','other'].includes(pos) || (pos && category!=='word'))
+    throw new Error('Частину мови можна вказати лише для категорії Word.');
+  return {...extras,category,part_of_speech:pos};
 }
 export function normalize(text, language) {
   let result = String(text).normalize('NFKC').toLocaleLowerCase(language === 'en' ? 'en' : 'uk')
@@ -65,7 +69,9 @@ export function mergeWords(existing, incoming, makeId) {
     if (keys.has(key)) {
       const index = words.findIndex(w => wordKey(w) === key);
       const prior = wordExtras(words[index]), extra = wordExtras(word);
-      words[index] = {...words[index], ...Object.fromEntries([...Object.keys(EXTRA_LIMITS),'category'].map(k => [k, prior[k] || extra[k]]))};
+      const category=prior.category || extra.category;
+      words[index] = {...words[index], ...Object.fromEntries(Object.keys(EXTRA_LIMITS).map(k => [k, prior[k] || extra[k]])),category,
+        part_of_speech:category==='word' ? prior.part_of_speech || extra.part_of_speech : ''};
       continue;
     }
     let id = word.id;
