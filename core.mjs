@@ -1,3 +1,4 @@
+import {mergeReviews} from './progress.mjs';
 // Pure data and answer logic shared by the app and its dependency-free tests.
 export const MAX_WORDS = 5000;
 export const MAX_TEXT = 500;
@@ -41,7 +42,7 @@ export function wordKey(word) {
   // Order of accepted variants does not make a new card.
   return JSON.stringify(['en','uk'].map(lang => [...new Set(variants(word[lang]).map(v => normalize(v, lang)))].sort()));
 }
-export function emptyData() { return {schemaVersion: 1, words: [], lastQuiz: null}; }
+export function emptyData() { return {schemaVersion: 1, words: [], lastQuiz: null, reviews: []}; }
 export function validateBackup(data) {
   if (!data || Array.isArray(data) || data.schemaVersion !== 1 || !Array.isArray(data.words) || data.words.length > MAX_WORDS)
     throw new Error('Невідомий формат копії або більше 5000 слів. Потрібен JSON, експортований цим застосунком.');
@@ -59,7 +60,7 @@ export function validateBackup(data) {
       throw new Error('Некоректний підсумок квізу. Імпорт скасовано.');
     lastQuiz = {direction:q.direction, total:q.total, correct:q.correct, date:q.date};
   }
-  return {schemaVersion: 1, words, lastQuiz};
+  return {schemaVersion: 1, words, lastQuiz, reviews: mergeReviews(data.reviews ?? [])};
 }
 export function mergeWords(existing, incoming, makeId) {
   const words = [...existing], keys = new Set(existing.map(wordKey));

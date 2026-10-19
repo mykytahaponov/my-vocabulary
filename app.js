@@ -1,3 +1,4 @@
+import {mergeReviews, buildProgress, progressFor, selectPractice, reviewAliases} from './progress.mjs';
 import {MAX_WORDS, emptyData, validateText, validateBackup, wordKey, mergeWords, isCorrect, variants, shuffled, wordExtras, CATEGORY_LABELS, POS_LABELS} from './core.mjs';
 import {SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY} from './config.js';
 import {plainWord, sameContent, checkedCloud, desiredRow, pendingCount, reconcile} from './sync.mjs';
@@ -36,7 +37,8 @@ function commit(next, recovering = false, fromCloud = false) {
     }
     const serialized = JSON.stringify(next);
     localStorage.setItem(STORAGE_KEY, serialized);
-    const wordsChanged = next.words !== data.words;
+    const wordsChanged = next.words !== data.words || next.reviews !== data.reviews;
+    if(next.words!==data.words)progressSource=null;
     baseline = serialized; data = next;
     if (recovering) { damagedRaw = null; $('storage-warning').hidden = true; $('export-raw').hidden = true; }
     render(!wordsChanged); if(syncConflicts.length) renderConflicts(); if(!fromCloud && data.cloud) { syncMessage = ''; scheduleSync(); } renderAccount(); return true;
@@ -50,6 +52,40 @@ window.addEventListener('storage', event => {
 });
 $('reload').onclick = () => { if (confirm('Перезавантажити? Незбережені поля й поточний квіз буде втрачено.')) location.reload(); };
 function element(tag, text, className) { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
+let progressCache=null,progressSource=null,progressTime=0;
+function progressIndex() {
+  if(progressSource!==data.reviews || Date.now()-progressTime>60000) {
+    progressSource=data.reviews;progressTime=Date.now();
+    progressCache=buildProgress(reviewAliases(data.reviews,data.words,wordKey),progressTime);
+  }
+  return progressCache;
+}
+function wordProgress(word,direction=$('direction').value) {
+  return progressFor(progressIndex(),word.id,wordKey(word),direction);
+}
+function nextReviewText(p) {
+  return !p.total ? 'Ще не тренував' : p.dueNow ? 'Можна повторити' : `Повторення: ${new Date(p.due).toLocaleDateString('uk-UA',{day:'numeric',month:'short'})}`;
+}
+function renderProgress() {
+  const stats=data.words.map(w=>wordProgress(w));
+  const learned=stats.filter(p=>p.stage>=5).length,learning=stats.filter(p=>p.total && p.stage<5).length;
+  $('progress-summary').textContent=`Засвоєно ${learned} · Вчу ${learning} · Нових ${stats.filter(p=>!p.total).length}`;
+  $('review-summary').textContent=`Можна повторити: ${stats.filter(p=>p.dueNow).length}. Прогрес для ${$('direction').value==='en-uk' ? 'EN → UK' : 'UK → EN'}.`;
+  const count=selectPractice(data.words,progressIndex(),$('direction').value,wordKey,{all:$('practice-pool').value==='all'}).length;
+  $('start').disabled=!count;
+  $('practice-hint').textContent=!data.words.length ? '' : !count ? 'У цьому напрямку повторення поки не потрібні. За бажанням обери «Усі слова».' : $('practice-pool').value==='all' ? 'Рання практика враховується у відповідях, але не прискорює рівень засвоєння.' : 'Спочатку слова для повторення, потім нові. Обирай зручний для себе обсяг.';
+}
+function renderAnswerProgress(word) {
+  const p=wordProgress(word,quiz.direction);
+  $('answer-progress').textContent=`Правильно ${p.correct} із ${p.total} · поспіль ${p.streak}. ${nextReviewText(p)}.`;
+}
+function saveReview(word,correct,replaces=null,reviewedAt=new Date().toISOString()) {
+  try {
+    const review={id:crypto.randomUUID(),word_id:word.id,word_key:wordKey(word),direction:quiz.direction,correct,reviewed_at:reviewedAt,replaces};
+    if(!commit({...data,reviews:mergeReviews(data.reviews,[review])}))return null;
+    return review;
+  }catch(error){notify(error.message || 'Не вдалося зберегти прогрес.',true);return null;}
+}
 function render(skipWords=false) {
   $('word-count').textContent = data.words.length;
   $('available-count').textContent = data.words.length ? `У словнику: ${data.words.length}` : 'Додай слова, які хочеш запам’ятати.';
@@ -57,6 +93,7 @@ function render(skipWords=false) {
   $('export').disabled = damagedRaw !== null; $('export-raw').hidden = damagedRaw === null;
   const q = data.lastQuiz;
   $('last-quiz').textContent = q ? `Остання практика · ${new Date(q.date).toLocaleDateString('uk-UA')} · ${q.direction === 'en-uk' ? 'EN → UK' : 'UK → EN'} · ${q.correct} з ${q.total}` : '';
+  renderProgress();
   if(!skipWords) renderWords();
 }
 function renderWords() {
@@ -70,6 +107,15 @@ function renderWords() {
     if(word.category)content.append(element('span',CATEGORY_LABELS[word.category],'word-label'));
     if(word.category==='word' && word.part_of_speech)content.append(element('span',POS_LABELS[word.part_of_speech],'pos-label'));
     content.append(element('p', word.uk));
+    const progressDetails=element('details','','word-progress');
+    progressDetails.append(element('summary',`EN → UK: ${wordProgress(word,'en-uk').label} · UK → EN: ${wordProgress(word,'uk-en').label}`));
+    for(const direction of ['en-uk','uk-en']) {
+      const p=wordProgress(word,direction),name=direction==='en-uk'?'EN → UK':'UK → EN';
+      progressDetails.append(element('p',`${name} · ${p.label}`, 'progress-name'));
+      progressDetails.append(element('p',`Правильно ${p.correct} із ${p.total} · поспіль ${p.streak}`));
+      if(p.total)progressDetails.append(element('p',`${nextReviewText(p)} · Остання практика: ${new Date(p.last).toLocaleDateString('uk-UA')}`));
+    }
+    content.append(progressDetails);
     if(word.pattern || word.example_en || word.example_uk || word.note){
       const details=element('details','','word-examples');details.append(element('summary',word.pattern ? 'Конструкція та приклад' : 'Приклад і примітка'));
       if(word.pattern)details.append(element('p',`Pattern: ${word.pattern}`,'word-pattern'));
@@ -163,7 +209,7 @@ $('search').oninput = renderWords;
 function showTab(next) {
   if (next === tab) return true;
   if (quiz && !quiz.finished && next !== 'quiz') {
-    if (!confirm('Залишити квіз? Поточні відповіді не буде збережено.')) return false;
+    if (!confirm('Залишити квіз? Прогрес перевірених відповідей уже збережено. Підсумок цього квізу не буде записано.')) return false;
     quiz = null; showQuizScreen('setup');
   }
   tab = next;
@@ -174,11 +220,17 @@ function showTab(next) {
 document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => showTab(button.dataset.tab));
 $('add-first').onclick = () => { if(showTab('words'))openEditor(); };
 function showQuizScreen(screen) { for (const name of ['setup','active','result']) $(`quiz-${name}`).hidden = name !== screen; }
-function startQuiz(words, direction, limit = words.length) {
-  quiz = {words: shuffled(words, limit), direction, index:0, answers:[], checked:false, finished:false};
+function startQuiz(words, direction, limit = words.length, ordered=false) {
+  quiz = {words: ordered ? words.slice(0,limit) : shuffled(words, limit), direction, index:0, answers:[], checked:false, finished:false};
   showQuizScreen('active'); showQuestion();
 }
-$('start-form').onsubmit = event => { event.preventDefault(); if (data.words.length) startQuiz(data.words, $('direction').value, $('quiz-size').value === 'all' ? data.words.length : Number($('quiz-size').value)); };
+$('direction').onchange=()=>renderProgress();$('practice-pool').onchange=()=>renderProgress();
+$('start-form').onsubmit = event => {
+  event.preventDefault();
+  const limit=$('quiz-size').value==='all' ? data.words.length : Number($('quiz-size').value);
+  const words=selectPractice(data.words,progressIndex(),$('direction').value,wordKey,{all:$('practice-pool').value==='all',limit});
+  if(words.length)startQuiz(words,$('direction').value,words.length,true);
+};
 function showQuestion() {
   const word = quiz.words[quiz.index]; const toUk = quiz.direction === 'en-uk';
   $('quiz-progress').textContent = `СЛОВО ${quiz.index + 1} ІЗ ${quiz.words.length}`;
@@ -196,7 +248,10 @@ function checkAnswer(skipped = false) {
   if (!skipped && !answer) { $('answer').focus(); return; }
   const word = quiz.words[quiz.index], expected = quiz.direction === 'en-uk' ? word.uk : word.en;
   const correct = !skipped && isCorrect(answer, expected, quiz.direction === 'en-uk' ? 'uk' : 'en');
-  quiz.answers.push({word, answer, expected, correct, skipped}); quiz.checked = true;
+  const review=saveReview(word,correct);
+  if(!review)return;
+  quiz.answers.push({word, answer, expected, correct, skipped,review}); quiz.checked = true;
+  renderAnswerProgress(word);
   $('answer').disabled = true; $('check').hidden = true; $('skip').hidden = true;
   $('feedback').hidden = false; $('feedback').classList.toggle('wrong', !correct);
   $('feedback-title').textContent = correct ? 'Правильно ✓' : skipped ? 'Наступного разу згадаєш.' : 'Поки що не збігається.';
@@ -212,7 +267,10 @@ function checkAnswer(skipped = false) {
 $('answer-form').onsubmit = event => { event.preventDefault(); checkAnswer(); }; $('skip').onclick = () => checkAnswer(true);
 $('accept').onclick = () => {
   if (!quiz || !quiz.checked) return;
-  quiz.answers.at(-1).correct = true; $('feedback').classList.remove('wrong');
+  const answer=quiz.answers.at(-1);
+  if(answer.correct || answer.skipped)return;
+  if(!saveReview(answer.word,true,answer.review.id,answer.review.reviewed_at))return;
+  answer.correct = true;renderAnswerProgress(answer.word); $('feedback').classList.remove('wrong');
   $('feedback-title').textContent = 'Зараховано тобою ✓'; $('accept').hidden = true;
 };
 $('next').onclick = () => {
@@ -241,7 +299,7 @@ function download(contents, filename) {
   const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 $('export').onclick = () => {
-  download(JSON.stringify({schemaVersion:1, words:data.words, lastQuiz:data.lastQuiz, exportedAt:new Date().toISOString()}, null, 2), `my-vocabulary-${new Date().toISOString().slice(0,10)}.json`);
+  download(JSON.stringify({schemaVersion:1, words:data.words, lastQuiz:data.lastQuiz, reviews:data.reviews, exportedAt:new Date().toISOString()}, null, 2), `my-vocabulary-${new Date().toISOString().slice(0,10)}.json`);
   notify('Копію підготовлено. Перевір завантаження у «Файли».');
 };
 $('export-raw').onclick = () => { if (damagedRaw !== null) download(damagedRaw, 'my-vocabulary-recovery.json'); };
@@ -254,7 +312,9 @@ $('import-form').onsubmit = async event => {
     const incoming = validateBackup(JSON.parse(await file.text()));
     if (damagedRaw !== null && mode !== 'replace') throw new Error('Для відновлення пошкоджених даних обери «Замінити весь словник». Спочатку збережи пошкоджені дані.');
     if (mode === 'replace' && !confirm(`Замінити весь поточний словник (${data.words.length} слів) копією (${incoming.words.length} слів)? Після входу ця заміна пошириться на хмару та інші пристрої. Спочатку збережи експорт, якщо потрібні старі слова.`)) return;
-    const next = mode === 'replace' ? {...incoming,...(data.cloud?{cloud:data.cloud}:{})} : {...data, words:mergeWords(data.words, incoming.words, makeId)};
+    // Review history is append-only: a restore cannot erase practice on another device.
+    const next = mode === 'replace' ? {...incoming,reviews:mergeReviews(data.reviews,incoming.reviews),...(data.cloud?{cloud:data.cloud}:{})}
+      : {...data, words:mergeWords(data.words, incoming.words, makeId),reviews:mergeReviews(data.reviews,incoming.reviews)};
     const added = next.words.length - data.words.length;
     if (commit(next, mode === 'replace')) { resetForm(); $('import-form').reset(); notify(mode === 'replace' ? `Відновлено ${next.words.length} слів.` : `Додано ${added} слів. Дублікати пропущено.`); }
   } catch (err) { notify(err instanceof SyntaxError ? 'Це не коректний JSON-файл. Дані не змінено.' : err.message || 'Не вдалося прочитати копію.', true); }
@@ -281,6 +341,10 @@ render();
 
 
 // The old storage key and JSON backup format stay compatible with version 1.
+function pendingReviews() {
+  const ids=new Set(data.cloud?.reviewIds || []);
+  return data.reviews.filter(r=>!ids.has(r.id));
+}
 function canSync() {
   const session=connection.session();
   return session && data.cloud?.owner===session.user.id && !storageUnavailable && damagedRaw===null && !conflict;
@@ -292,8 +356,8 @@ function renderAccount() {
   $('account-email').textContent=session?.user.email || owner?.email || '';
 
   $('sync-now').hidden=!canSync(); $('sync-now').disabled=syncBusy;
-  $('account-description').textContent=owner ? `Слова синхронізуються після входу. Підсумок квізу зберігається лише тут.` : 'Поки що слова зберігаються лише тут. Увійди для синхронізації.';
-  const pending=owner ? pendingCount(data.words,owner.base) : 0;
+  $('account-description').textContent=owner ? `Слова й прогрес синхронізуються після входу. Підсумок останнього квізу зберігається лише тут.` : 'Поки що слова зберігаються лише тут. Увійди для синхронізації.';
+  const pending=owner ? pendingCount(data.words,owner.base)+pendingReviews().length : 0;
   let status=syncMessage || (syncBusy ? 'Синхронізація…' : owner ? pending ? `На пристрої є непередані зміни: ${pending}.` : 'Локальна копія. Перевіряємо хмару після входу.' : 'Локально · увійди для синхронізації');
   if(owner && !session)status=`Увійди повторно для синхронізації.${pending ? ` Непередані зміни: ${pending}.` : ''}`;
   if(owner && navigator.onLine===false)status=`Офлайн · ${pending ? `непередані зміни: ${pending}` : 'локальний словник доступний'}`;
@@ -355,10 +419,28 @@ async function runSync() {
       // Only acknowledge the server revision. Any edits made in flight remain pending.
       if(!persistCloud({...data,cloud:{...data.cloud,base}}))throw new Error('Хмарний запис отримано, але локальне збереження не вдалося. Зроби JSON-копію.');
     }
-    const pending=pendingCount(data.words,data.cloud.base);
+    await syncReviews(owner);
+    if(!canSync() || data.cloud.owner!==owner)return;
+    const pending=pendingCount(data.words,data.cloud.base)+pendingReviews().length;
     syncMessage=syncConflicts.length ? `Потрібно обрати версію: ${syncConflicts.length}. Відкрий «Налаштування».` : pending ? `Непередані зміни: ${pending}.` : `Синхронізовано · ${new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}`;
   } catch(error) {syncMessage=error.message || 'Синхронізацію не завершено. Локальні зміни залишилися на пристрої.';syncError=true;syncAgain=false;}
   finally {syncBusy=false;renderAccount();if(syncAgain)scheduleSync(1500);}
+}
+async function syncReviews(owner) {
+  const remote=await connection.listReviews(owner);
+  if(!canSync() || data.cloud.owner!==owner)return;
+  const merged=mergeReviews(data.reviews,remote);
+  const remoteIds=new Set(remote.map(r=>r.id));
+  const reviews=JSON.stringify(merged)===JSON.stringify(data.reviews) ? data.reviews : merged;
+  if(!persistCloud({...data,reviews,cloud:{...data.cloud,reviewIds:[...remoteIds]}}))throw new Error('Не вдалося зберегти історію повторень.');
+  const pending=pendingReviews();
+  if(pending.length) {
+    await connection.writeReviews(owner,pending);
+    if(!canSync() || data.cloud.owner!==owner)return;
+    for(const r of pending)remoteIds.add(r.id);
+    if(!persistCloud({...data,cloud:{...data.cloud,reviewIds:[...remoteIds]}}))throw new Error('Не вдалося зберегти стан синхронізації прогресу.');
+  }
+  if(pendingReviews().length)syncAgain=true;
 }
 function renderConflicts() {
   $('sync-conflicts').hidden=!syncConflicts.length;$('conflict-list').replaceChildren();
@@ -406,15 +488,15 @@ $('login-form').onsubmit=async event=>{
   finally{loggingIn=false;$('login').disabled=false;$('login-password').value='';renderAccount();}
 };
 $('logout').onclick=async()=>{
-  const pending=data.cloud ? pendingCount(data.words,data.cloud.base) : 0;
+  const pending=data.cloud ? pendingCount(data.words,data.cloud.base)+pendingReviews().length : 0;
   if(!confirm(`Вийти? Локальна копія залишиться на цьому пристрої.${pending ? ` Непередані зміни: ${pending}.` : ''}`))return;
   // Remove credentials synchronously before awaiting the remote logout.
   const loggingOut=connection.logout();renderAccount();await loggingOut;notify('Вихід виконано. Локальний словник доступний.');
 };
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')scheduleSync(0);});
-window.addEventListener('focus',()=>scheduleSync(0));
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){renderProgress();scheduleSync(0);}});
+window.addEventListener('focus',()=>{renderProgress();scheduleSync(0);});
 window.addEventListener('offline',()=>renderAccount());
-setInterval(()=>{if(document.visibilityState==='visible')scheduleSync(0);},30000);
+setInterval(()=>{if(document.visibilityState==='visible'){renderProgress();scheduleSync(0);}},30000);
 renderAccount();scheduleSync(0);
 
 // Keep the bottom navigation clear of the software keyboard on narrow screens.

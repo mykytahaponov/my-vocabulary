@@ -1,3 +1,4 @@
+import {checkedReview, MAX_REVIEWS} from './progress.mjs';
 // Small REST client; no CDN, build tools, or third-party runtime packages.
 import {checkedRow} from './sync.mjs';
 import {wordExtras} from './core.mjs';
@@ -32,7 +33,7 @@ export class SupabaseConnection {
         else if(response.status===401) message='Потрібен повторний вхід у словник.';
         else if(response.status===403) message='Немає доступу до хмарного словника. Перевір налаштування Supabase.';
         else if(response.status===429) message='Забагато спроб. Зачекай трохи й повтори.';
-        else if(response.status===404 || value?.code==='42P01') message='Хмарну таблицю не знайдено. Перевір, чи створена vocabulary_words.';
+        else if(response.status===404 || ['42P01','PGRST205'].includes(value?.code)) message=path.includes('vocabulary_reviews') ? 'Потрібна таблиця прогресу: виконай 01-add-progress.sql із комплекту v3.4.0. Відповіді збережено на пристрої.' : 'Хмарну таблицю не знайдено. Перевір, чи створена vocabulary_words.';
         else if(['42703','PGRST204'].includes(value?.code)) message='Потрібно оновити поля Supabase: виконай 01-update-structure.sql із комплекту v3.3.0. Локальні слова збережені.';
         throw new CloudError(message,response.status,value?.code || value?.error_code || '');
       }
@@ -84,6 +85,24 @@ export class SupabaseConnection {
     }
     if(!Array.isArray(rows)||rows.length!==1)throw new CloudError('Слово щойно змінилося на іншому пристрої. Повторюємо перевірку.',409);
     return checkedRow(rows[0]);
+  }
+  async listReviews(owner) {
+    const rows=[];
+    for(let offset=0;offset<=MAX_REVIEWS;offset+=500) {
+      const q=new URLSearchParams({select:'id,word_id,word_key,direction,correct,reviewed_at,replaces',user_id:`eq.${owner}`,order:'id.asc',limit:'500',offset:String(offset)});
+      const page=await this.request(`/rest/v1/vocabulary_reviews?${q}`);
+      if(!Array.isArray(page))throw new CloudError('Неочікувана відповідь таблиці прогресу.');
+      rows.push(...page.map(checkedReview));
+      if(rows.length>MAX_REVIEWS)throw new CloudError('Історія повторень завелика. Збережи JSON-копію.');
+      if(page.length<500)return rows;
+    }
+  }
+  async writeReviews(owner, rows) {
+    for(let i=0;i<rows.length;i+=100) {
+      const body=rows.slice(i,i+100).map(row=>({...checkedReview(row),user_id:owner}));
+      await this.request('/rest/v1/vocabulary_reviews?on_conflict=user_id,id',{
+        method:'POST',body,prefer:'resolution=ignore-duplicates,return=minimal'});
+    }
   }
   async logout() {
     const s=this.session();this.storage.removeItem(this.sessionKey);

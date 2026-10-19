@@ -14,7 +14,10 @@ export function checkedCloud(value) {
     throw new Error('Некоректні локальні дані синхронізації.');
   const base = value.base.map(row=>checkedRow(row,true));
   if (new Set(base.map(r => r.id)).size !== base.length) throw new Error('Повторні ID у даних синхронізації.');
-  return {owner:value.owner, email:value.email, base};
+  const reviewIds=value.reviewIds ?? [];
+  if(!Array.isArray(reviewIds) || reviewIds.length>30000 || reviewIds.some(id=>typeof id!=='string' || !/^[a-f0-9-]{36}$/i.test(id)))
+    throw new Error('Некоректна черга синхронізації прогресу.');
+  return {owner:value.owner, email:value.email, base,reviewIds:[...new Set(reviewIds)]};
 }
 export function desiredRow(words, base, id) {
   const word = words.find(w => w.id === id);
