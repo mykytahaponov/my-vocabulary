@@ -33,7 +33,7 @@ export class SupabaseConnection {
         else if(response.status===403) message='Немає доступу до хмарного словника. Перевір налаштування Supabase.';
         else if(response.status===429) message='Забагато спроб. Зачекай трохи й повтори.';
         else if(response.status===404 || value?.code==='42P01') message='Хмарну таблицю не знайдено. Перевір, чи створена vocabulary_words.';
-        else if(['42703','PGRST204'].includes(value?.code)) message='Потрібно виконати оновлення Supabase для прикладів речень (файл 01-add-examples.sql). Слова збережені локально.';
+        else if(['42703','PGRST204'].includes(value?.code)) message='Потрібно оновити поля Supabase: виконай SQL із комплекту оновлення. Якщо приклади вже працювали — потрібен 01-add-labels.sql. Локальні слова збережені.';
         throw new CloudError(message,response.status,value?.code || value?.error_code || '');
       }
       return value;
@@ -65,7 +65,7 @@ export class SupabaseConnection {
   async list(owner) {
     const rows=[];
     for(let offset=0;offset<100000;offset+=500){
-      const q=new URLSearchParams({select:'id,en,uk,example_en,example_uk,note,deleted,revision',user_id:`eq.${owner}`,order:'id.asc',limit:'500',offset:String(offset)});
+      const q=new URLSearchParams({select:'id,en,uk,example_en,example_uk,note,category,deleted,revision',user_id:`eq.${owner}`,order:'id.asc',limit:'500',offset:String(offset)});
       const page=await this.request(`/rest/v1/vocabulary_words?${q}`);
       if(!Array.isArray(page))throw new CloudError('Неочікувана відповідь таблиці слів.');
       rows.push(...page.map(row=>checkedRow(row)));

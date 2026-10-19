@@ -1,6 +1,12 @@
 // Pure data and answer logic shared by the app and its dependency-free tests.
 export const MAX_WORDS = 5000;
 export const MAX_TEXT = 500;
+export const CATEGORY_LABELS = {word:'Слово',phrasal_verb:'Фразове дієслово',expression:'Вираз'};
+export function wordCategory(word) {
+  const value=word.category ?? '';
+  if (!['','word','phrasal_verb','expression'].includes(value)) throw new Error('Невідома позначка картки. Дані не змінено.');
+  return value;
+}
 export const EXTRA_LIMITS = {example_en:2000, example_uk:2000, note:500};
 export function wordExtras(word) {
   const extras = {};
@@ -9,7 +15,7 @@ export function wordExtras(word) {
     if (typeof value !== 'string' || value.length > limit) throw new Error('Некоректний приклад або примітка в картці.');
     extras[key] = value.trim();
   }
-  return extras;
+  return {...extras,category:wordCategory(word)};
 }
 export function normalize(text, language) {
   let result = String(text).normalize('NFKC').toLocaleLowerCase(language === 'en' ? 'en' : 'uk')
@@ -59,7 +65,7 @@ export function mergeWords(existing, incoming, makeId) {
     if (keys.has(key)) {
       const index = words.findIndex(w => wordKey(w) === key);
       const prior = wordExtras(words[index]), extra = wordExtras(word);
-      words[index] = {...words[index], ...Object.fromEntries(Object.keys(EXTRA_LIMITS).map(k => [k, prior[k] || extra[k]]))};
+      words[index] = {...words[index], ...Object.fromEntries([...Object.keys(EXTRA_LIMITS),'category'].map(k => [k, prior[k] || extra[k]]))};
       continue;
     }
     let id = word.id;

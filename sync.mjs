@@ -2,7 +2,7 @@ import {MAX_WORDS, validateText, wordKey, wordExtras} from './core.mjs';
 export const plainWord = row => ({id:row.id, en:row.en, uk:row.uk, ...wordExtras(row)});
 export function sameContent(a, b) {
   return Boolean(a && b && a.en === b.en && a.uk === b.uk && Boolean(a.deleted) === Boolean(b.deleted) &&
-    ['example_en','example_uk','note'].every(key => (a[key] || '') === (b[key] || '')));
+    ['example_en','example_uk','note','category'].every(key => (a[key] || '') === (b[key] || '')));
 }
 export function checkedRow(row, allowStaged=false) {
   if (!row || typeof row.id !== 'string' || !row.id || row.id.length > 100 || !validateText(row.en) || !validateText(row.uk) || typeof row.deleted !== 'boolean' || !Number.isSafeInteger(row.revision) || row.revision < (allowStaged ? 0 : 1))
