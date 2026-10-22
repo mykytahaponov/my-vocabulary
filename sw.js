@@ -1,8 +1,8 @@
 // Bump this version for every release that changes any cached file.
-const VERSION = 'v3.4.0';
+const VERSION = 'v3.5.0';
 const PREFIX = `my-vocabulary:${self.registration.scope}:`;
 const CACHE = PREFIX + VERSION;
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './core.mjs', './progress.mjs', './config.js', './sync.mjs', './cloud.mjs', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
+const ASSETS = ['./', './index.html', './styles.css', './app.js', './core.mjs', './progress.mjs', './sentences.mjs', './config.js', './sync.mjs', './cloud.mjs', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);

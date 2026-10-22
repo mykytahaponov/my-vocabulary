@@ -1,3 +1,4 @@
+import {randomSentenceGap, shouldOfferSentence, requestSentenceCheck} from './sentences.mjs';
 import {mergeReviews, buildProgress, progressFor, selectPractice, reviewAliases} from './progress.mjs';
 import {MAX_WORDS, emptyData, validateText, validateBackup, wordKey, mergeWords, isCorrect, variants, shuffled, wordExtras, CATEGORY_LABELS, POS_LABELS} from './core.mjs';
 import {SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY} from './config.js';
@@ -11,7 +12,10 @@ let editingOriginal = null;
 let syncBusy = false, syncAgain = false, syncTimer, syncConflicts = [], syncMessage = '', syncError = false, loggingIn = false;
 const SESSION_KEY = `${STORAGE_KEY}:session:${SUPABASE_URL}`;
 const connection = new SupabaseConnection({url:SUPABASE_URL,key:SUPABASE_PUBLISHABLE_KEY,storage:localStorage,sessionKey:SESSION_KEY});
-let editing = null, quiz = null, tab = 'quiz', toastTimer, pendingWorker;
+let editing = null, quiz = null, tab = 'quiz', toastTimer, pendingWorker, sentenceContext=null;
+const SENTENCE_PREF_KEY=`${STORAGE_KEY}:sentences`;
+try{$('sentence-enabled').checked=localStorage.getItem(SENTENCE_PREF_KEY)!=='off';}catch{$('sentence-enabled').checked=true;}
+$('sentence-enabled').onchange=()=>{try{localStorage.setItem(SENTENCE_PREF_KEY,$('sentence-enabled').checked?'on':'off');}catch{notify('Вибір діє до закриття застосунку.');}};
 const makeId = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 function notify(message, error = false) {
   if($('word-editor').open) { $('editor-message').textContent=message; $('editor-message').classList.toggle('error',error); return; }
@@ -210,7 +214,7 @@ function showTab(next) {
   if (next === tab) return true;
   if (quiz && !quiz.finished && next !== 'quiz') {
     if (!confirm('Залишити квіз? Прогрес перевірених відповідей уже збережено. Підсумок цього квізу не буде записано.')) return false;
-    quiz = null; showQuizScreen('setup');
+    sentenceContext=null;quiz = null; showQuizScreen('setup');
   }
   tab = next;
   for (const name of ['quiz','words','backup']) $(`${name}-view`).hidden = name !== next;
@@ -219,9 +223,10 @@ function showTab(next) {
 }
 document.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => showTab(button.dataset.tab));
 $('add-first').onclick = () => { if(showTab('words'))openEditor(); };
-function showQuizScreen(screen) { for (const name of ['setup','active','result']) $(`quiz-${name}`).hidden = name !== screen; }
+function showQuizScreen(screen) { for (const name of ['setup','active','sentence','result']) $(`quiz-${name}`).hidden = name !== screen; }
 function startQuiz(words, direction, limit = words.length, ordered=false) {
-  quiz = {words: ordered ? words.slice(0,limit) : shuffled(words, limit), direction, index:0, answers:[], checked:false, finished:false};
+  sentenceContext=null;
+  quiz = {sentenceEnabled:$('sentence-enabled').checked && Boolean(canSync()) && navigator.onLine!==false,nextSentenceAt:randomSentenceGap(),words: ordered ? words.slice(0,limit) : shuffled(words, limit), direction, index:0, answers:[], checked:false, finished:false};
   showQuizScreen('active'); showQuestion();
 }
 $('direction').onchange=()=>renderProgress();$('practice-pool').onchange=()=>renderProgress();
@@ -252,6 +257,9 @@ function checkAnswer(skipped = false) {
   if(!review)return;
   quiz.answers.push({word, answer, expected, correct, skipped,review}); quiz.checked = true;
   renderAnswerProgress(word);
+  const sentenceDue=shouldOfferSentence(quiz);
+  $('write-sentence').hidden=sentenceDue;
+  $('next').textContent=sentenceDue?'Скласти речення →':quiz.index===quiz.words.length-1?'Переглянути підсумок →':'Наступне слово →';
   $('answer').disabled = true; $('check').hidden = true; $('skip').hidden = true;
   $('feedback').hidden = false; $('feedback').classList.toggle('wrong', !correct);
   $('feedback-title').textContent = correct ? 'Правильно ✓' : skipped ? 'Наступного разу згадаєш.' : 'Поки що не збігається.';
@@ -273,14 +281,77 @@ $('accept').onclick = () => {
   answer.correct = true;renderAnswerProgress(answer.word); $('feedback').classList.remove('wrong');
   $('feedback-title').textContent = 'Зараховано тобою ✓'; $('accept').hidden = true;
 };
+function advanceQuiz() {
+  if(!quiz || quiz.finished)return;
+  sentenceContext=null;quiz.index++;
+  if(quiz.index<quiz.words.length){showQuizScreen('active');showQuestion();}else finishQuiz();
+}
 $('next').onclick = () => {
-  if (!quiz?.checked) return;
-  quiz.index++; if (quiz.index < quiz.words.length) showQuestion(); else finishQuiz();
+  if (!quiz?.checked || sentenceContext) return;
+  if(shouldOfferSentence(quiz))openSentence(true);else advanceQuiz();
 };
+$('write-sentence').onclick=()=>openSentence();
+function openSentence(automatic=false) {
+  if(!quiz?.checked || quiz.finished || sentenceContext)return;
+  if(!canSync() || navigator.onLine===false){notify('Для перевірки речення потрібні інтернет і вхід у словник.');if(automatic)advanceQuiz();return;}
+  sentenceContext={quiz,index:quiz.index,word:quiz.words[quiz.index],requestId:null,input:'',result:null,busy:false};
+  $('sentence-word').textContent=sentenceContext.word.en;
+  $('sentence-meaning').textContent=sentenceContext.word.uk;
+  $('sentence-input').value='';$('sentence-input').disabled=false;
+  $('sentence-result').hidden=true;$('sentence-error').textContent='';
+  $('sentence-check').textContent='Перевірити речення';$('sentence-check').disabled=false;
+  $('sentence-continue').textContent='Пропустити й далі →';
+  showQuizScreen('sentence');$('sentence-input').focus();
+}
+$('sentence-input').oninput=()=>{
+  if(!sentenceContext || sentenceContext.busy)return;
+  $('sentence-result').hidden=true;$('sentence-error').textContent='';
+  $('sentence-check').textContent='Перевірити речення';
+};
+$('sentence-form').onsubmit=async event=>{
+  event.preventDefault();const context=sentenceContext;
+  if(!context || context.busy || context.quiz!==quiz || quiz.finished)return;
+  const sentence=$('sentence-input').value.trim();
+  if(sentence.length<8 || sentence.length>800){$('sentence-error').textContent='Напиши речення англійською: від 8 до 800 символів.';return;}
+  if(!canSync() || navigator.onLine===false){$('sentence-error').textContent='Для перевірки потрібні інтернет і вхід у словник. Текст залишається в полі.';return;}
+  if(sentence===context.input && context.result){renderSentenceResult(context.result);return;}
+  if(sentence!==context.input || !context.requestId){context.requestId=crypto.randomUUID();context.input=sentence;context.result=null;}
+  context.busy=true;$('sentence-check').disabled=true;$('sentence-input').disabled=true;
+  $('sentence-check').textContent='Перевіряю…';$('sentence-error').textContent='';
+  try {
+    const result=await requestSentenceCheck(connection,{word:context.word,sentence,requestId:context.requestId});
+    if(sentenceContext!==context || quiz!==context.quiz || quiz.finished || quiz.index!==context.index)return;
+    context.result=result;renderSentenceResult(result);
+  }catch(error){
+    if(sentenceContext!==context)return;
+    $('sentence-error').textContent=error.message || 'Перевірка недоступна. Можеш пропустити вправу.';
+    if(error.code==='RETRY_NEW')context.requestId=null;
+  }finally{
+    context.busy=false;
+    if(sentenceContext===context){$('sentence-check').disabled=false;$('sentence-input').disabled=false;$('sentence-check').textContent=context.result?'Показати перевірку':'Перевірити речення';}
+  }
+};
+function renderSentenceResult(result) {
+  $('sentence-result').hidden=false;
+  $('sentence-verdict').textContent=result.verdict==='correct'?'Речення правильне ✓':result.verdict==='uncertain'?'Потрібно трохи більше контексту':'Є що виправити';
+  $('sentence-explanation').textContent=result.explanation_uk;
+  $('sentence-correction').textContent=result.corrected_sentence;
+  $('sentence-correction-wrap').hidden=result.verdict!=='needs_work' || !result.corrected_sentence;
+  $('sentence-issues').replaceChildren(...result.issues_uk.map(text=>element('li',text)));
+  $('sentence-natural').textContent=result.natural_alternative;
+  $('sentence-natural-wrap').hidden=!result.natural_alternative || result.natural_alternative===sentenceContext.input;
+  $('sentence-continue').textContent=quiz.index===quiz.words.length-1?'Переглянути підсумок →':'Далі до слів →';
+}
+$('sentence-continue').onclick=()=>{
+  if(!sentenceContext || sentenceContext.quiz!==quiz)return;
+  quiz.nextSentenceAt=quiz.answers.length+randomSentenceGap();advanceQuiz();
+};
+$('sentence-end').onclick=()=>{if(quiz && confirm('Завершити практику? Прогрес слів уже збережено.'))finishQuiz();};
 $('end-quiz').onclick = () => { if (confirm('Завершити квіз зараз? Підсумок врахує лише перевірені відповіді.')) finishQuiz(); };
 function finishQuiz() {
-  quiz.finished = true;
-  if (!quiz.answers.length) { quiz = null; showQuizScreen('setup'); return; }
+  if(!quiz || quiz.finished)return;
+  sentenceContext=null;quiz.finished = true;
+  if (!quiz.answers.length) { sentenceContext=null;quiz = null; showQuizScreen('setup'); return; }
   const total = quiz.answers.length, correct = quiz.answers.filter(a => a.correct).length;
   const saved = commit({...data, lastQuiz:{direction:quiz.direction, total, correct, date:new Date().toISOString()}});
   $('result-score').textContent = `${correct} / ${total}`;
@@ -292,7 +363,7 @@ function finishQuiz() {
   }
   document.activeElement?.blur();showQuizScreen('result'); $('quiz-result').focus();
 }
-$('again').onclick = () => { quiz = null; showQuizScreen('setup'); };
+$('again').onclick = () => { sentenceContext=null;quiz = null; showQuizScreen('setup'); };
 $('retry').onclick = () => startQuiz(quiz.answers.filter(a => !a.correct).map(a => a.word), quiz.direction);
 function download(contents, filename) {
   const url = URL.createObjectURL(new Blob([contents], {type:'application/json;charset=utf-8'}));
@@ -350,6 +421,7 @@ function canSync() {
   return session && data.cloud?.owner===session.user.id && !storageUnavailable && damagedRaw===null && !conflict;
 }
 function renderAccount() {
+  $('sentence-mode-hint').textContent=canSync() && navigator.onLine!==false ? 'За бажанням склади речення через 3–6 слів. ШІ перевіряє лише після натискання кнопки; вправу можна пропустити.' : 'Речення з ШІ доступні після входу й з інтернетом. Звичайна практика працює без них.';
   const session=connection.session(), owner=data.cloud;
   $('login-form').hidden=Boolean(session && owner?.owner===session.user.id);
   $('signed-in').hidden=$('login-form').hidden===false;

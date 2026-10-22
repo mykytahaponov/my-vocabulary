@@ -21,14 +21,16 @@ export class SupabaseConnection {
     this.storage.setItem(this.sessionKey,JSON.stringify(session)); return session;
   }
   async raw(path, {method='GET',body,token,prefer}={}) {
-    const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),20000);
+    const timeout=path.startsWith('/functions/')?35000:20000;
+    const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),timeout);
     try {
       const response=await this.fetcher(this.url+path,{method,cache:'no-store',signal:controller.signal,headers:{apikey:this.key,'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`} : {}),...(prefer?{Prefer:prefer}:{})},...(body !== undefined ? {body:JSON.stringify(body)} : {})});
       const text=await response.text(); let value;
       try {value=text?JSON.parse(text):null;} catch {throw new CloudError('Сервіс повернув неочікувану відповідь. Спробуй пізніше.',response.status);}
       if (!response.ok) {
         let message='Не вдалося зв’язатися з хмарою. Слова залишилися на пристрої.';
-        if (path.includes('/token') && response.status===400) message='Перевір пошту й пароль. Якщо вхід працював раніше — увійди повторно.';
+        if(path.startsWith('/functions/')) message=typeof value?.message==='string' ? value.message : response.status===404 ? 'Функцію check-sentence ще не створено у Supabase.' : response.status===401 ? 'Увійди повторно. Якщо вхід працює, перевір налаштування JWT функції у Supabase.' : 'Перевірка речень поки недоступна.';
+        else if (path.includes('/token') && response.status===400) message='Перевір пошту й пароль. Якщо вхід працював раніше — увійди повторно.';
         else if(response.status===401 && /invalid api key/i.test(value?.message || '')) message='Supabase відхилив публічний ключ. Перевір config.js та відповідність ключа проєкту.';
         else if(response.status===401) message='Потрібен повторний вхід у словник.';
         else if(response.status===403) message='Немає доступу до хмарного словника. Перевір налаштування Supabase.';
@@ -40,7 +42,7 @@ export class SupabaseConnection {
       return value;
     } catch(error) {
       if(error instanceof CloudError)throw error;
-      const detail=error?.name==='AbortError' ? 'Сервер не відповів за 20 секунд.' : `Причина: ${String(error?.message || 'мережевий запит не виконано').slice(0,140)}`;
+      const detail=error?.name==='AbortError' ? `Сервер не відповів за ${timeout/1000} секунд.` : `Причина: ${String(error?.message || 'мережевий запит не виконано').slice(0,140)}`;
       throw new CloudError(`Не вдалося виконати запит до Supabase. Локальні слова залишилися на пристрої. ${detail}`);
     } finally {clearTimeout(timer);}
   }
